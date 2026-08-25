@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 class CaseCreate(BaseModel):
     pass
@@ -10,6 +10,12 @@ class CaseResponse(BaseModel):
     created_by: str
     status: str
     created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, dt: datetime, _info) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     class Config:
         from_attributes = True
@@ -34,6 +40,12 @@ class CaseDetailResponse(BaseModel):
     created_at: datetime
     slides: list[dict] = []
     stages: list[dict] = []
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, dt: datetime, _info) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     class Config:
         from_attributes = True
