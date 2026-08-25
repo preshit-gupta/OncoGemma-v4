@@ -1,20 +1,25 @@
 "use client";
 
 import React, { useState } from "react";
-import { CheckCircle2, Clock, AlertTriangle, XCircle, Play, PanelLeftClose, PanelLeft } from "lucide-react";
+import { CheckCircle2, Clock, AlertTriangle, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw } from "lucide-react";
+import { retryStage } from "@/lib/api";
 
 export interface StageInfo {
   id: string;
   stage: string;
+  attempt: number;
   status: string;
+  error?: string;
   started_at?: string;
   completed_at?: string;
 }
 
 interface StageRailProps {
+  caseId: string;
   stages: StageInfo[];
   activeStage: string;
   onSelectStage: (stageName: string) => void;
+  onRefresh?: () => void;
 }
 
 const STAGE_ORDER = [
@@ -26,15 +31,31 @@ const STAGE_ORDER = [
   { name: "report", label: "v4.5 CAP Report" },
 ];
 
-export function StageRail({ stages, activeStage, onSelectStage }: StageRailProps) {
+export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefresh }: StageRailProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [retryingStage, setRetryingStage] = useState<string | null>(null);
 
-  const getStageStatus = (stageName: string) => {
-    const found = stages.find((s) => s.stage === stageName);
-    return found ? found.status : "pending";
+  const getStageInfo = (stageName: string) => {
+    const sorted = stages.filter((s) => s.stage === stageName).sort((a, b) => b.attempt - a.attempt);
+    return sorted[0];
   };
 
-  const renderStatusBadge = (status: string) => {
+  const handleRetry = async (e: React.MouseEvent, stageName: string) => {
+    e.stopPropagation();
+    setRetryingStage(stageName);
+    try {
+      await retryStage(caseId, stageName);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to retry stage execution");
+    } finally {
+      setRetryingStage(null);
+    }
+  };
+
+  const renderStatusBadge = (stageInfo?: StageInfo) => {
+    const status = stageInfo?.status || "pending";
     switch (status) {
       case "done":
       case "confirmed":
@@ -80,37 +101,64 @@ export function StageRail({ stages, activeStage, onSelectStage }: StageRailProps
       {/* Stage Navigation List */}
       <nav className="flex-1 overflow-y-auto p-2 space-y-1">
         {STAGE_ORDER.map((st, idx) => {
-          const status = getStageStatus(st.name);
+          const stageInfo = getStageInfo(st.name);
+          const status = stageInfo?.status || "pending";
           const isActive = activeStage === st.name;
+          const isFailed = status === "failed";
 
           return (
-            <button
-              key={st.name}
-              onClick={() => onSelectStage(st.name)}
-              title={collapsed ? `${st.label} (${status})` : undefined}
-              className={`w-full text-left rounded-lg border transition-all flex items-center ${
-                collapsed ? "p-2.5 justify-center" : "p-3 justify-between"
-              } ${
-                isActive
-                  ? "bg-sky-50 border-sky-300 text-sky-900 shadow-sm"
-                  : "bg-white border-slate-100 hover:bg-slate-50 text-slate-700"
-              }`}
-            >
-              <div className="flex items-center space-x-2.5 min-w-0">
-                {!collapsed && (
-                  <span className="text-xs font-medium text-slate-400 w-3.5 shrink-0">
-                    {idx + 1}.
-                  </span>
-                )}
-                {!collapsed && (
-                  <div className="truncate">
-                    <div className="text-xs font-semibold truncate">{st.label}</div>
-                    <div className="text-[10px] text-slate-400 capitalize truncate">{status}</div>
-                  </div>
-                )}
-              </div>
-              <div>{renderStatusBadge(status)}</div>
-            </button>
+            <div key={st.name} className="flex flex-col space-y-1">
+              <button
+                onClick={() => onSelectStage(st.name)}
+                title={collapsed ? `${st.label} (${status})` : undefined}
+                className={`w-full text-left rounded-lg border transition-all flex items-center ${
+                  collapsed ? "p-2.5 justify-center" : "p-3 justify-between"
+                } ${
+                  isActive
+                    ? "bg-sky-50 border-sky-300 text-sky-900 shadow-sm"
+                    : isFailed
+                    ? "bg-rose-50/50 border-rose-200 text-rose-900"
+                    : "bg-white border-slate-100 hover:bg-slate-50 text-slate-700"
+                }`}
+              >
+                <div className="flex items-center space-x-2.5 min-w-0">
+                  {!collapsed && (
+                    <span className="text-xs font-medium text-slate-400 w-3.5 shrink-0">
+                      {idx + 1}.
+                    </span>
+                  )}
+                  {!collapsed && (
+                    <div className="truncate">
+                      <div className="text-xs font-semibold truncate">{st.label}</div>
+                      <div className="text-[10px] text-slate-400 capitalize truncate">
+                        {status} {stageInfo?.attempt && stageInfo.attempt > 1 ? `(Attempt ${stageInfo.attempt})` : ""}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-1.5">
+                  {!collapsed && isFailed && (
+                    <button
+                      onClick={(e) => handleRetry(e, st.name)}
+                      disabled={retryingStage === st.name}
+                      className="p-1 hover:bg-rose-100 text-rose-600 rounded transition"
+                      title="Retry Stage Execution"
+                    >
+                      <RotateCcw className={`w-3.5 h-3.5 ${retryingStage === st.name ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
+                  {renderStatusBadge(stageInfo)}
+                </div>
+              </button>
+
+              {/* Show error snippet if failed */}
+              {!collapsed && isFailed && stageInfo?.error && (
+                <div className="mx-1 px-2.5 py-1.5 bg-rose-50 border border-rose-200 rounded text-[10px] text-rose-700 font-mono truncate" title={stageInfo.error}>
+                  Error: {stageInfo.error.split("\n").filter(Boolean).pop() || "Stage failed"}
+                </div>
+              )}
+            </div>
           );
         })}
       </nav>

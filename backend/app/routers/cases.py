@@ -125,6 +125,56 @@ async def upload_slide_file(
         "gcs_uri": gcs_uri
     }
 
+@router.post("/{case_id}/stages/{stage_name}/retry", status_code=status.HTTP_202_ACCEPTED)
+def retry_case_stage(
+    case_id: uuid.UUID,
+    stage_name: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """Re-queue execution attempt for a specific pipeline stage."""
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    slide_obj = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
+    if not slide_obj:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    stmt = (
+        select(StageExecution)
+        .where(StageExecution.case_id == case_id, StageExecution.stage == stage_name)
+        .order_by(StageExecution.attempt.desc())
+    )
+    existing_stage = db.scalars(stmt).first()
+    next_attempt = (existing_stage.attempt + 1) if existing_stage else 1
+
+    new_stage = StageExecution(
+        case_id=case_id,
+        stage=stage_name,
+        attempt=next_attempt,
+        status="queued",
+        input_ref={"gcs_uri_original": slide_obj.gcs_uri_original, "slide_id": str(slide_obj.id)}
+    )
+    db.add(new_stage)
+    
+    audit = AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="stage_retried",
+        stage=stage_name,
+        payload={"attempt": next_attempt}
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(new_stage)
+
+    return {
+        "status": "queued",
+        "stage_execution_id": str(new_stage.id),
+        "attempt": next_attempt
+    }
+
 @router.post("/{case_id}/slide/upload-url", response_model=SlideUploadUrlResponse)
 def get_slide_upload_url(
     case_id: uuid.UUID,

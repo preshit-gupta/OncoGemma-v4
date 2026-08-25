@@ -68,7 +68,6 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
         </div>
 
         <div className="flex items-center space-x-2">
-          {/* Toggleable Slide Technical Details Button */}
           <button
             onClick={() => setShowSlideDetails(!showSlideDetails)}
             className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs flex items-center space-x-1.5 border border-slate-700"
@@ -92,9 +91,11 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Stage Rail */}
         <StageRail
+          caseId={caseId}
           stages={caseDetail?.stages || []}
           activeStage={activeStage}
           onSelectStage={setActiveStage}
+          onRefresh={loadData}
         />
 
         {/* Center Digital Slide Viewer */}
