@@ -1,10 +1,11 @@
 import time
+import uuid
 import traceback
 from datetime import datetime, timezone
-from sqlalchemy import text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import SessionLocal
+from app.core.db import SessionLocal, engine
 from app.models.stage_execution import StageExecution
 from worker.ingest import run_ingest
 
@@ -14,26 +15,22 @@ HANDLERS = {
 
 def poll_and_execute_single_task():
     """
-    Executes a single queued task using Postgres FOR UPDATE SKIP LOCKED.
-    Returns True if a task was found and executed, False if queue was empty.
+    Executes a single queued task using SQLAlchemy ORM queue fetch.
     """
     db: Session = SessionLocal()
     try:
-        # 1. Acquire next available queued stage execution row atomically
-        stmt = text("""
-            SELECT id FROM stage_executions
-            WHERE status = 'queued' AND stage = ANY(:stages)
-            ORDER BY started_at NULLS FIRST, id ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        """)
-        
-        row = db.execute(stmt, {"stages": list(HANDLERS.keys())}).first()
-        if not row:
-            return False
+        stages_list = list(HANDLERS.keys())
+        stmt = (
+            select(StageExecution)
+            .where(
+                StageExecution.status == "queued",
+                StageExecution.stage.in_(stages_list)
+            )
+            .order_by(StageExecution.started_at.asc().nulls_first(), StageExecution.id.asc())
+            .limit(1)
+        )
 
-        exec_id = row[0]
-        stage_exec = db.get(StageExecution, exec_id)
+        stage_exec = db.scalars(stmt).first()
         if not stage_exec:
             return False
 
@@ -69,15 +66,15 @@ def poll_and_execute_single_task():
         db.close()
 
 def run_worker_loop():
-    print(f"[Worker] Starting OncoGemma stage worker poll loop. Handlers registered: {list(HANDLERS.keys())}")
+    print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
     while True:
         try:
             executed = poll_and_execute_single_task()
             if not executed:
-                time.sleep(2.0)
+                time.sleep(1.0)
         except Exception as e:
             print(f"[Worker Loop Exception] {e}")
-            time.sleep(5.0)
+            time.sleep(3.0)
 
 if __name__ == "__main__":
     run_worker_loop()

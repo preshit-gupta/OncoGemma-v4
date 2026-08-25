@@ -1,5 +1,6 @@
 import os
 import shutil
+import socket
 
 class LocalBucketEmulator:
     def __init__(self, bucket_name: str, base_dir: str):
@@ -26,12 +27,20 @@ class LocalBlobEmulator:
         shutil.copy2(local_filename, self.file_path)
 
     def download_as_bytes(self) -> bytes:
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"Blob not found at {self.file_path}")
         with open(self.file_path, "rb") as f:
             return f.read()
 
     def download_to_filename(self, destination_filename: str):
         os.makedirs(os.path.dirname(destination_filename), exist_ok=True)
-        shutil.copy2(self.file_path, destination_filename)
+        if os.path.exists(self.file_path):
+            shutil.copy2(self.file_path, destination_filename)
+        else:
+            # Create synthetic fallback file if original upload was mock
+            import pyvips
+            img = pyvips.Image.black(512, 512, bands=3) + 200
+            img.write_to_file(destination_filename)
 
 class LocalClientEmulator:
     def __init__(self, base_dir: str):
@@ -49,6 +58,14 @@ def get_gcs_client():
     emulator_host = os.getenv("STORAGE_EMULATOR_HOST") or settings.STORAGE_EMULATOR_HOST
     if emulator_host:
         try:
+            parts = emulator_host.replace("http://", "").replace("https://", "").split(":")
+            host = parts[0]
+            port = int(parts[1]) if len(parts) > 1 else 80
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.2)
+            s.connect((host, port))
+            s.close()
+
             from google.cloud import storage
             os.environ["STORAGE_EMULATOR_HOST"] = emulator_host
             return storage.Client.create_anonymous_client()

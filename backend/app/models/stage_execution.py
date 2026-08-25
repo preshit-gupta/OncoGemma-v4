@@ -2,18 +2,18 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.db import Base
+from app.models.base import GUID
 
-# Dialect-agnostic JSON type that compiles to JSONB on Postgres and JSON on SQLite/others
 JSONType = JSON().with_variant(JSONB, "postgresql")
 
 class StageExecution(Base):
     __tablename__ = "stage_executions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    case_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("cases.id"), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    case_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("cases.id"), nullable=False)
     
     stage: Mapped[str] = mapped_column(String, nullable=False) # ingest|preprocess|qc|triage|mitosis|grading|report
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

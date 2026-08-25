@@ -2,15 +2,15 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Float, Integer, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.db import Base
+from app.models.base import GUID
 
 class Slide(Base):
     __tablename__ = "slides"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    case_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("cases.id"), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    case_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("cases.id"), nullable=False)
     
     gcs_uri_original: Mapped[str] = mapped_column(String, nullable=False)
     gcs_uri_pyramid: Mapped[str | None] = mapped_column(String, nullable=True)

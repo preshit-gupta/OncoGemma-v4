@@ -31,7 +31,6 @@ def create_case(
     db.commit()
     db.refresh(case_obj)
 
-    # Log audit event
     audit = AuditEvent(
         case_id=str(case_obj.id),
         actor=user.id,
@@ -66,10 +65,7 @@ def get_slide_upload_url(
     file_uuid = uuid.uuid4()
     ext = req.filename.rsplit(".", 1)[-1].lower() if "." in req.filename else "svs"
     
-    # Path per PRD: og-{env}-raw/cases/{case_id}/{uuid4()}.{ext} (no patient identifiers)
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{file_uuid}.{ext}"
-    
-    # In local dev / emulator mode, provide upload path or session URI
     upload_url = f"{settings.STORAGE_EMULATOR_HOST}/upload/storage/v1/b/{settings.GCS_RAW_BUCKET}/o?uploadType=resumable&name=cases/{case_id}/{file_uuid}.{ext}"
 
     return SlideUploadUrlResponse(
@@ -88,13 +84,14 @@ def finalize_slide_upload(
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Create slide record
+    # Create slide record and flush so slide_obj.id is generated
     slide_obj = Slide(
         case_id=case_id,
         gcs_uri_original=req.gcs_uri,
         checksum_sha256=req.client_sha256
     )
     db.add(slide_obj)
+    db.flush()
     
     # Queue 'ingest' stage_execution
     stage_exec = StageExecution(
