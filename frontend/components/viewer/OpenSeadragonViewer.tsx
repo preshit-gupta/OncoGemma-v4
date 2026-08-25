@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import OpenSeadragon from "openseadragon";
-import { ZoomIn, ZoomOut, Maximize, ChevronDown, Check } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize, ChevronDown, Check, Layers, Image as ImageIcon } from "lucide-react";
 
 interface OpenSeadragonViewerProps {
   caseId: string;
@@ -29,6 +29,7 @@ export function OpenSeadragonViewer({
   const [isEditingZoom, setIsEditingZoom] = useState<boolean>(false);
   const [customZoomInput, setCustomZoomInput] = useState<string>("1.0");
   const [showDropdown, setShowDropdown] = useState<boolean>(false);
+  const [activeLayer, setActiveLayer] = useState<"orig" | "norm">("orig");
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -43,10 +44,10 @@ export function OpenSeadragonViewer({
       height: imageHeightPx,
       tileSize: 256,
       tileOverlap: 0,
-      minLevel: 8,
+      minLevel: 0,
       maxLevel: 18,
       getTileUrl: (level: number, x: number, y: number) => {
-        return `/api/v1/cases/${caseId}/tiles/${layer}/${level}/${x}_${y}.jpg`;
+        return `/api/v1/cases/${caseId}/tiles/${activeLayer}/${level}/${x}_${y}.jpg`;
       }
     };
 
@@ -57,9 +58,10 @@ export function OpenSeadragonViewer({
       showNavigationControl: false,
       animationTime: 0.3,
       blendTime: 0.1,
-      maxZoomPixelRatio: 3.0,
-      visibilityRatio: 0.8,
-      constrainDuringPan: true
+      maxZoomPixelRatio: 4.0,
+      visibilityRatio: 0.9,
+      constrainDuringPan: true,
+      homeFillsViewer: false
     });
 
     viewerRef.current = viewer;
@@ -94,7 +96,7 @@ export function OpenSeadragonViewer({
         viewerRef.current = null;
       }
     };
-  }, [caseId, layer, imageWidthPx, imageHeightPx, mppX]);
+  }, [caseId, activeLayer, imageWidthPx, imageHeightPx, mppX]);
 
   const setTargetMagnification = (targetMag: number) => {
     if (!viewerRef.current || !viewerRef.current.viewport) return;
@@ -134,9 +136,36 @@ export function OpenSeadragonViewer({
   };
 
   return (
-    <div className="relative w-full h-full bg-slate-900 overflow-hidden flex flex-col">
+    <div className="relative w-full h-full bg-slate-950 overflow-hidden flex flex-col">
+      {/* View Mode Layer Selector Bar */}
+      <div className="absolute top-4 left-4 bg-slate-900/90 backdrop-blur border border-slate-700 text-white rounded-lg p-1.5 flex items-center space-x-2 shadow-xl z-20 text-xs">
+        <button
+          onClick={() => setActiveLayer("orig")}
+          className={`px-3 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition ${
+            activeLayer === "orig"
+              ? "bg-sky-600 text-white shadow-sm"
+              : "text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          <ImageIcon className="w-3.5 h-3.5" />
+          <span>H&E Slide (Pyramid)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveLayer("norm")}
+          className={`px-3 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition ${
+            activeLayer === "norm"
+              ? "bg-sky-600 text-white shadow-sm"
+              : "text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Normalized / Mask</span>
+        </button>
+      </div>
+
       {/* OSD Canvas */}
-      <div ref={containerRef} className="w-full h-full cursor-crosshair" />
+      <div ref={containerRef} className="w-full h-full cursor-crosshair bg-slate-950" />
 
       {/* Floating Toolbar with Custom Zoom Input & Presets */}
       <div className="absolute top-4 right-4 bg-slate-900/90 backdrop-blur border border-slate-700 text-white rounded-lg p-1.5 flex items-center space-x-1.5 shadow-xl z-20">

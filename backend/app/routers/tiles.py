@@ -70,12 +70,5 @@ def get_tile(
         except Exception as e:
             print(f"[Tiles Router Note] Storage fetch error: {e}")
 
-    # Fallback synthetic tile generation if ungenerated/missing
-    import pyvips
-    img = pyvips.Image.black(256, 256, bands=3) + 220
-    tile_bytes = img.write_to_buffer(".jpg[Q=90]")
-    return Response(
-        content=tile_bytes,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=86400"}
-    )
+    # Return 404 so OpenSeadragon dynamically interpolates nearest level without solid white tiles
+    raise HTTPException(status_code=404, detail="Tile missing")

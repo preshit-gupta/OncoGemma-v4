@@ -76,13 +76,38 @@ def extract_openslide_metadata(filepath: str) -> dict:
 
 def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
     """
-    Generate DZI pyramid tiles using pyvips with low-memory PIL fallback for gigapixel WSIs.
+    Generate DZI pyramid tiles using OpenSlide DeepZoomGenerator with low-memory fallback.
     Returns path to the output DZI file.
     """
     dzi_base = os.path.join(output_dir, "pyramid")
     dzi_files_dir = dzi_base + "_files"
     os.makedirs(dzi_files_dir, exist_ok=True)
     
+    # 1. Primary: OpenSlide DeepZoomGenerator for real gigapixel SVS/NDPI/TIFF slides
+    try:
+        import openslide
+        from openslide.deepzoom import DeepZoomGenerator
+        
+        slide = openslide.OpenSlide(filepath)
+        dz = DeepZoomGenerator(slide, tile_size=256, overlap=0, limit_bounds=False)
+        
+        for level in range(dz.level_count):
+            level_dir = os.path.join(dzi_files_dir, str(level))
+            os.makedirs(level_dir, exist_ok=True)
+            cols, rows = dz.level_tiles[level]
+            for c in range(cols):
+                for r in range(rows):
+                    tile = dz.get_tile(level, (c, r))
+                    if tile.mode != "RGB":
+                        tile = tile.convert("RGB")
+                    tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
+                    tile.save(tile_path, "JPEG", quality=85)
+        slide.close()
+        return dzi_base + ".dzi"
+    except Exception as oe:
+        print(f"[Ingest Worker Note] OpenSlide DeepZoom note: {oe}. Trying pyvips / PIL fallback.")
+
+    # 2. Secondary: Pyvips
     try:
         import pyvips
         img = pyvips.Image.new_from_file(filepath)
@@ -93,65 +118,56 @@ def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
             suffix=".jpg[Q=85]"
         )
         return dzi_base + ".dzi"
-    except Exception as e:
-        print(f"[Ingest Worker Note] Pyvips C library unavailable ({e}). Using low-memory PIL DZI pyramid generator.")
+    except Exception as pe:
+        print(f"[Ingest Worker Note] Pyvips note: {pe}. Using low-memory PIL DZI pyramid generator.")
+
+    # 3. Fallback: PIL without white padding canvas
+    with Image.open(filepath) as pil_img:
+        try:
+            if hasattr(pil_img, "n_frames") and pil_img.n_frames > 1:
+                target_frame = min(2, pil_img.n_frames - 1)
+                pil_img.seek(target_frame)
+        except Exception as se:
+            print(f"[Ingest Worker Note] Pyramidal frame seek note: {se}")
+
+        if pil_img.mode != "RGB":
+            img = pil_img.convert("RGB")
+        else:
+            img = pil_img.copy()
+
+        width, height = img.size
+        max_dim = max(width, height)
+        raw_max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 10
         
-        with Image.open(filepath) as pil_img:
-            # Seek to low-resolution directory frame in pyramidal SVS/TIFF to avoid 18GB MemoryError
-            try:
-                if hasattr(pil_img, "n_frames") and pil_img.n_frames > 1:
-                    target_frame = min(2, pil_img.n_frames - 1)
-                    pil_img.seek(target_frame)
-            except Exception as se:
-                print(f"[Ingest Worker Note] Pyramidal frame seek note: {se}")
-
-            width, height = pil_img.size
-            max_dim = max(width, height)
-            raw_max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 10
+        effective_max_level = min(raw_max_level, 14)
+        for level in range(8, effective_max_level + 1):
+            level_scale = 2 ** (level - raw_max_level)
+            level_w = max(1, int(round(width * level_scale)))
+            level_h = max(1, int(round(height * level_scale)))
             
-            # Create overview (max 2048x2048 px)
-            target_w = min(2048, width)
-            target_h = min(2048, height)
+            level_img = img.resize((level_w, level_h), Image.Resampling.BILINEAR)
+
+            level_dir = os.path.join(dzi_files_dir, str(level))
+            os.makedirs(level_dir, exist_ok=True)
             
-            overview = pil_img.resize((target_w, target_h), Image.Resampling.BILINEAR)
-            if overview.mode != "RGB":
-                overview = overview.convert("RGB")
+            tile_size = 256
+            cols = int(math.ceil(level_w / tile_size))
+            rows = int(math.ceil(level_h / tile_size))
+            
+            for c in range(cols):
+                for r in range(rows):
+                    left = c * tile_size
+                    upper = r * tile_size
+                    right = min(left + tile_size, level_w)
+                    lower = min(upper + tile_size, level_h)
+                    
+                    crop_box = (left, upper, right, lower)
+                    tile_img = level_img.crop(crop_box)
+                    
+                    tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
+                    tile_img.save(tile_path, "JPEG", quality=85)
 
-            # Generate pyramid levels (8 to 14) from overview
-            effective_max_level = min(raw_max_level, 14)
-            for level in range(8, effective_max_level + 1):
-                level_scale = 2 ** (level - effective_max_level)
-                level_w = max(1, int(round(overview.width * level_scale)))
-                level_h = max(1, int(round(overview.height * level_scale)))
-                
-                level_img = overview.resize((level_w, level_h), Image.Resampling.BILINEAR)
-
-                level_dir = os.path.join(dzi_files_dir, str(level))
-                os.makedirs(level_dir, exist_ok=True)
-                
-                tile_size = 256
-                cols = int(math.ceil(level_w / tile_size))
-                rows = int(math.ceil(level_h / tile_size))
-                
-                for c in range(cols):
-                    for r in range(rows):
-                        left = c * tile_size
-                        upper = r * tile_size
-                        right = min(left + tile_size, level_w)
-                        lower = min(upper + tile_size, level_h)
-                        
-                        crop_box = (left, upper, right, lower)
-                        tile_img = level_img.crop(crop_box)
-                        
-                        if tile_img.size != (256, 256):
-                            canvas = Image.new("RGB", (256, 256), (255, 255, 255))
-                            canvas.paste(tile_img, (0, 0))
-                            tile_img = canvas
-                            
-                        tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
-                        tile_img.save(tile_path, "JPEG", quality=85)
-
-        return dzi_base + ".dzi"
+    return dzi_base + ".dzi"
 
 def upload_dzi_tree_to_gcs(dzi_files_dir: str, slide_id: str):
     """
