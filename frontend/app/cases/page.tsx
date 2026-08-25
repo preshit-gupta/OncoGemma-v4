@@ -11,6 +11,7 @@ export default function CasesPage() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatusText, setUploadStatusText] = useState("Uploading Slide File...");
 
   useEffect(() => {
     loadCases();
@@ -32,21 +33,28 @@ export default function CasesPage() {
     if (!file) return;
 
     setUploading(true);
-    setUploadProgress(20);
+    setUploadProgress(5);
+    setUploadStatusText(`Creating case for ${file.name}...`);
 
     try {
       // 1. Create case
       const newCase = await createCase();
-      setUploadProgress(40);
+      setUploadProgress(10);
+      setUploadStatusText(`Uploading ${file.name} to Cloud Storage (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
-      // 2. Upload actual slide file bytes
-      await uploadSlideFile(newCase.id, file);
+      // 2. Upload actual slide file bytes with live progress
+      await uploadSlideFile(newCase.id, file, (pct) => {
+        setUploadProgress(10 + Math.round(pct * 0.85));
+        if (pct >= 100) {
+          setUploadStatusText("Finalizing ingest pipeline...");
+        }
+      });
+      
       setUploadProgress(100);
-
       await loadCases();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Failed to upload slide file");
+      alert(`Upload Error: ${err.message || "Failed to upload slide file"}`);
     } finally {
       setUploading(false);
     }
@@ -120,12 +128,12 @@ export default function CasesPage() {
       {uploading && (
         <div className="mb-6 p-4 bg-sky-50 border border-sky-200 rounded-lg flex flex-col space-y-2">
           <div className="flex items-center justify-between text-xs font-semibold text-sky-800">
-            <span>Uploading & Processing Slide File...</span>
+            <span>{uploadStatusText}</span>
             <span>{uploadProgress}%</span>
           </div>
           <div className="w-full bg-sky-200 h-2 rounded-full overflow-hidden">
             <div
-              className="bg-sky-600 h-full transition-all duration-300"
+              className="bg-sky-600 h-full transition-all duration-200"
               style={{ width: `${uploadProgress}%` }}
             />
           </div>

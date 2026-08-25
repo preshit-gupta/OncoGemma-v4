@@ -102,7 +102,7 @@ async def upload_slide_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ):
-    """Direct file upload endpoint for WSIs and slide images."""
+    """Direct file upload endpoint for WSIs and slide images with 8MB chunking and 1-hour extended timeout."""
     case_obj = db.get(Case, case_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -117,14 +117,26 @@ async def upload_slide_file(
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
     blob = bucket.blob(blob_name)
 
-    # Save uploaded file bytes to raw storage
+    # 8MB chunking for large WSI uploads
+    if hasattr(blob, "chunk_size"):
+        blob.chunk_size = 8 * 1024 * 1024
+
+    # Save uploaded file bytes to local scratch temp
     temp_dir = tempfile.mkdtemp(prefix="og_upload_")
     local_temp_path = os.path.join(temp_dir, f"upload.{ext}")
     try:
         with open(local_temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        blob.upload_from_filename(local_temp_path)
+        # Extended 1-hour timeout for gigapixel pathology slides
+        if hasattr(blob, "upload_from_filename"):
+            try:
+                blob.upload_from_filename(local_temp_path, timeout=3600)
+            except TypeError:
+                blob.upload_from_filename(local_temp_path)
+    except Exception as upload_err:
+        print(f"[Upload Error] GCS Upload failed: {upload_err}")
+        raise HTTPException(status_code=500, detail=f"Cloud Storage upload failed: {str(upload_err)}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
