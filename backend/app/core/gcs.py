@@ -37,10 +37,9 @@ class LocalBlobEmulator:
         if os.path.exists(self.file_path):
             shutil.copy2(self.file_path, destination_filename)
         else:
-            # Create synthetic fallback file if original upload was mock
-            import pyvips
-            img = pyvips.Image.black(512, 512, bands=3) + 200
-            img.write_to_file(destination_filename)
+            from PIL import Image
+            img = Image.new("RGB", (512, 512), (240, 240, 240))
+            img.save(destination_filename, "JPEG")
 
 class LocalClientEmulator:
     def __init__(self, base_dir: str):
@@ -55,8 +54,18 @@ class LocalClientEmulator:
 
 def get_gcs_client():
     from app.core.config import settings
-    emulator_host = os.getenv("STORAGE_EMULATOR_HOST") or settings.STORAGE_EMULATOR_HOST
-    if emulator_host:
+    
+    use_real = os.getenv("USE_REAL_GCS", "true").lower() in ("true", "1") or settings.USE_REAL_GCS
+    if use_real and not os.getenv("STORAGE_EMULATOR_HOST"):
+        try:
+            from google.cloud import storage
+            client = storage.Client(project=settings.GCP_PROJECT_ID)
+            return client
+        except Exception as e:
+            print(f"[GCS Core Note] Real GCS connection fallback: {e}")
+
+    emulator_host = os.path.getenv("STORAGE_EMULATOR_HOST") or settings.STORAGE_EMULATOR_HOST
+    if emulator_host and "localhost" in emulator_host:
         try:
             parts = emulator_host.replace("http://", "").replace("https://", "").split(":")
             host = parts[0]
@@ -81,5 +90,7 @@ def ensure_buckets_exist():
     for bucket_name in [settings.GCS_RAW_BUCKET, settings.GCS_PYRAMIDS_BUCKET, settings.GCS_ARTIFACTS_BUCKET]:
         try:
             bucket = client.bucket(bucket_name)
+            if hasattr(bucket, "exists") and not bucket.exists():
+                client.create_bucket(bucket_name)
         except Exception as e:
-            print(f"[GCS] Local storage init note for {bucket_name}: {e}")
+            print(f"[GCS] Bucket check note for {bucket_name}: {e}")
