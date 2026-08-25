@@ -102,7 +102,7 @@ async def upload_slide_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ):
-    """Direct file upload endpoint for WSIs and slide images with 8MB chunking and 1-hour extended timeout."""
+    """Direct file upload endpoint - saves file locally and queues background worker ingest to stream to GCS."""
     case_obj = db.get(Case, case_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -111,34 +111,19 @@ async def upload_slide_file(
     ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "svs"
     
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{file_uuid}.{ext}"
-    
-    client = get_gcs_client()
-    bucket = client.bucket(settings.GCS_RAW_BUCKET)
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
-    blob = bucket.blob(blob_name)
 
-    # 8MB chunking for large WSI uploads
-    if hasattr(blob, "chunk_size"):
-        blob.chunk_size = 8 * 1024 * 1024
-
-    # Save uploaded file bytes to local scratch temp
-    temp_dir = tempfile.mkdtemp(prefix="og_upload_")
-    local_temp_path = os.path.join(temp_dir, f"upload.{ext}")
+    # Fast local buffer save for zero browser hang
+    temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../raw_uploads"))
+    os.makedirs(temp_dir, exist_ok=True)
+    local_temp_path = os.path.join(temp_dir, f"{case_id}_{file_uuid}.{ext}")
+    
     try:
         with open(local_temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        # Extended 1-hour timeout for gigapixel pathology slides
-        if hasattr(blob, "upload_from_filename"):
-            try:
-                blob.upload_from_filename(local_temp_path, timeout=3600)
-            except TypeError:
-                blob.upload_from_filename(local_temp_path)
-    except Exception as upload_err:
-        print(f"[Upload Error] GCS Upload failed: {upload_err}")
-        raise HTTPException(status_code=500, detail=f"Cloud Storage upload failed: {str(upload_err)}")
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception as save_err:
+        print(f"[Upload Error] Local file save failed: {save_err}")
+        raise HTTPException(status_code=500, detail=f"Local file buffer save failed: {str(save_err)}")
 
     # Create slide record
     slide_obj = Slide(
@@ -148,13 +133,18 @@ async def upload_slide_file(
     db.add(slide_obj)
     db.flush()
     
-    # Queue 'ingest' stage_execution
+    # Queue 'ingest' stage_execution with local file reference for background worker GCS streaming
     stage_exec = StageExecution(
         case_id=case_id,
         stage="ingest",
         attempt=1,
         status="queued",
-        input_ref={"gcs_uri_original": gcs_uri, "slide_id": str(slide_obj.id)}
+        input_ref={
+            "gcs_uri_original": gcs_uri,
+            "slide_id": str(slide_obj.id),
+            "blob_name": blob_name,
+            "local_file_path": local_temp_path
+        }
     )
     db.add(stage_exec)
     
@@ -338,7 +328,7 @@ def get_case_detail(
             "started_at": st.started_at.isoformat() if st.started_at else None,
             "completed_at": st.completed_at.isoformat() if st.completed_at else None
         }
-        for st in stages
+        for s in stages
     ]
 
     return CaseDetailResponse(

@@ -203,6 +203,7 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
     input_ref = stage_execution.input_ref or {}
     gcs_uri_original = input_ref.get("gcs_uri_original")
     slide_id = input_ref.get("slide_id")
+    local_file_path_input = input_ref.get("local_file_path")
 
     if not slide_id:
         raise ValueError("Missing slide_id in stage input_ref")
@@ -232,7 +233,20 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
         bucket = client.bucket(raw_bucket_name)
         blob = bucket.blob(blob_name)
         
-        if blob.exists():
+        # Fast path: If local upload temp file is available, stream to GCS & process
+        if local_file_path_input and os.path.exists(local_file_path_input):
+            shutil.copy2(local_file_path_input, local_slide_path)
+            try:
+                if hasattr(blob, "upload_from_filename"):
+                    blob.upload_from_filename(local_slide_path)
+            except Exception as ge:
+                print(f"[Ingest Worker Note] Background GCS raw upload note: {ge}")
+            finally:
+                try:
+                    os.remove(local_file_path_input)
+                except Exception:
+                    pass
+        elif blob.exists():
             blob.download_to_filename(local_slide_path)
         else:
             img = Image.new("RGB", (1024, 1024), color=(240, 220, 230))
