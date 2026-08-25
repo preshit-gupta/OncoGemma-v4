@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Upload, Plus, FileText, ArrowRight, CheckCircle2 } from "lucide-react";
 import { fetchCases, createCase, uploadSlideFile, Case } from "@/lib/api";
+import { formatISTDateTime } from "@/lib/utils";
 
 export default function CasesPage() {
   const [cases, setCases] = useState<Case[]>([]);
@@ -127,8 +128,8 @@ export default function CasesPage() {
                   <FileText className="w-4 h-4 text-sky-600" />
                   <span>Case #{c.id.substring(0, 8)}</span>
                 </div>
-                <div className="text-xs text-slate-400 mt-2">
-                  Created: {new Date(c.created_at).toLocaleString()}
+                <div className="text-xs text-slate-500 mt-2 font-medium">
+                  Created: {formatISTDateTime(c.created_at)}
                 </div>
               </div>
 
