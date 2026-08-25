@@ -102,7 +102,7 @@ async def upload_slide_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user)
 ):
-    """Direct file upload endpoint - saves file locally and queues background worker ingest to stream to GCS."""
+    """Direct file upload endpoint with seek(0) to preserve file stream bytes."""
     case_obj = db.get(Case, case_id)
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -113,12 +113,13 @@ async def upload_slide_file(
     gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{file_uuid}.{ext}"
     blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
 
-    # Fast local buffer save for zero browser hang
+    # Fast local buffer save with seek(0) to write complete file bytes
     temp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../raw_uploads"))
     os.makedirs(temp_dir, exist_ok=True)
     local_temp_path = os.path.join(temp_dir, f"{case_id}_{file_uuid}.{ext}")
     
     try:
+        await file.seek(0)
         with open(local_temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as save_err:
@@ -328,7 +329,7 @@ def get_case_detail(
             "started_at": st.started_at.isoformat() if st.started_at else None,
             "completed_at": st.completed_at.isoformat() if st.completed_at else None
         }
-        for s in stages
+        for st in stages
     ]
 
     return CaseDetailResponse(

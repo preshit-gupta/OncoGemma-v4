@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import OpenSeadragon from "openseadragon";
 import { ZoomIn, ZoomOut, Maximize, ChevronDown, Check, Layers, Image as ImageIcon } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 
 interface OpenSeadragonViewerProps {
   caseId: string;
@@ -48,7 +49,7 @@ export function OpenSeadragonViewer({
       minLevel: 0,
       maxLevel: 18,
       getTileUrl: (level: number, x: number, y: number) => {
-        return `/api/v1/cases/${caseId}/tiles/${activeLayer}/${level}/${x}_${y}.jpg`;
+        return `${API_BASE}/api/v1/cases/${caseId}/tiles/${activeLayer}/${level}/${x}_${y}.jpg`;
       }
     };
 
@@ -104,173 +105,176 @@ export function OpenSeadragonViewer({
     };
   }, [caseId, activeLayer, imageWidthPx, imageHeightPx, mppX]);
 
-  const setTargetMagnification = (targetMag: number) => {
-    if (!viewerRef.current || !viewerRef.current.viewport) return;
-    const baseMagRatio = 40.0 * 0.25 / mppX;
-    const targetImageZoom = targetMag / baseMagRatio;
-    const targetViewportZoom = viewerRef.current.viewport.imageToViewportZoom(targetImageZoom);
-    viewerRef.current.viewport.zoomTo(targetViewportZoom, undefined, false);
-  };
-
   const handleZoomIn = () => {
-    if (viewerRef.current && viewerRef.current.viewport) {
-      viewerRef.current.viewport.zoomBy(1.25);
+    if (viewerRef.current?.viewport) {
+      viewerRef.current.viewport.zoomBy(1.3);
+      viewerRef.current.viewport.applyConstraints();
     }
   };
 
   const handleZoomOut = () => {
-    if (viewerRef.current && viewerRef.current.viewport) {
-      viewerRef.current.viewport.zoomBy(0.8);
+    if (viewerRef.current?.viewport) {
+      viewerRef.current.viewport.zoomBy(1 / 1.3);
+      viewerRef.current.viewport.applyConstraints();
     }
   };
 
   const handleResetZoom = () => {
-    if (viewerRef.current && viewerRef.current.viewport) {
+    if (viewerRef.current?.viewport) {
       viewerRef.current.viewport.goHome();
     }
   };
 
-  const handleCustomZoomSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setIsEditingZoom(false);
-    const parsed = parseFloat(customZoomInput);
-    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
-      setTargetMagnification(parsed);
-    } else {
-      setCustomZoomInput(currentMag.toFixed(1));
+  const applyPower = (power: number) => {
+    if (!viewerRef.current?.viewport) return;
+    const targetImageZoom = power * (mppX / (40.0 * 0.25));
+    const targetViewportZoom = viewerRef.current.viewport.imageToViewportZoom(targetImageZoom);
+    viewerRef.current.viewport.zoomTo(targetViewportZoom);
+    viewerRef.current.viewport.applyConstraints();
+    setShowDropdown(false);
+  };
+
+  const handleCustomZoomSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFloat(customZoomInput);
+    if (!isNaN(val) && val > 0) {
+      applyPower(val);
     }
+    setIsEditingZoom(false);
   };
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden flex flex-col">
-      {/* View Mode Layer Selector Bar */}
-      <div className="absolute top-4 left-4 bg-slate-900/90 backdrop-blur border border-slate-700 text-white rounded-lg p-1.5 flex items-center space-x-2 shadow-xl z-20 text-xs">
-        <button
-          onClick={() => setActiveLayer("orig")}
-          className={`px-3 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition ${
-            activeLayer === "orig"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:bg-slate-800"
-          }`}
-        >
-          <ImageIcon className="w-3.5 h-3.5" />
-          <span>H&E Slide (Pyramid)</span>
-        </button>
+    <div className="relative w-full h-full bg-slate-950 flex flex-col">
+      {/* Top Floating Controls Bar */}
+      <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between pointer-events-none">
+        {/* Layer Selector Bar */}
+        <div className="pointer-events-auto bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg shadow-lg p-1 flex items-center space-x-1">
+          <button
+            onClick={() => setActiveLayer("orig")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition ${
+              activeLayer === "orig"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            <span>H&E Slide (Pyramid)</span>
+          </button>
+          <button
+            onClick={() => setActiveLayer("norm")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition ${
+              activeLayer === "norm"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Normalized / Mask</span>
+          </button>
+        </div>
 
-        <button
-          onClick={() => setActiveLayer("norm")}
-          className={`px-3 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition ${
-            activeLayer === "norm"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:bg-slate-800"
-          }`}
-        >
-          <Layers className="w-3.5 h-3.5" />
-          <span>Normalized / Mask</span>
-        </button>
-      </div>
+        {/* Zoom & Power Controls */}
+        <div className="pointer-events-auto bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg shadow-lg p-1 flex items-center space-x-1">
+          <button
+            onClick={handleZoomOut}
+            className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
+            title="Zoom Out"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
 
-      {/* OSD Canvas */}
-      <div ref={containerRef} className="w-full h-full cursor-crosshair bg-slate-950" />
+          <button
+            onClick={handleZoomIn}
+            className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
+            title="Zoom In"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
 
-      {/* Floating Toolbar with Custom Zoom Input & Presets */}
-      <div className="absolute top-4 right-4 bg-slate-900/90 backdrop-blur border border-slate-700 text-white rounded-lg p-1.5 flex items-center space-x-1.5 shadow-xl z-20">
-        <button
-          onClick={handleZoomIn}
-          className="p-1.5 hover:bg-slate-700 rounded transition"
-          title="Zoom In (+25%)"
-        >
-          <ZoomIn className="w-4 h-4 text-slate-200" />
-        </button>
-        <button
-          onClick={handleZoomOut}
-          className="p-1.5 hover:bg-slate-700 rounded transition"
-          title="Zoom Out (-20%)"
-        >
-          <ZoomOut className="w-4 h-4 text-slate-200" />
-        </button>
-        <button
-          onClick={handleResetZoom}
-          className="p-1.5 hover:bg-slate-700 rounded transition"
-          title="Reset View to Overview"
-        >
-          <Maximize className="w-4 h-4 text-slate-200" />
-        </button>
+          <button
+            onClick={handleResetZoom}
+            className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded transition"
+            title="Reset View"
+          >
+            <Maximize className="w-4 h-4" />
+          </button>
 
-        <div className="h-4 w-[1px] bg-slate-700 mx-1" />
+          <div className="h-4 w-[1px] bg-slate-800 mx-1" />
 
-        {/* Custom Zoom Input Box */}
-        <div className="relative flex items-center">
-          {isEditingZoom ? (
-            <form onSubmit={handleCustomZoomSubmit} className="flex items-center">
-              <input
-                type="number"
-                step="0.1"
-                min="0.1"
-                max="100"
-                autoFocus
-                value={customZoomInput}
-                onChange={(e) => setCustomZoomInput(e.target.value)}
-                onBlur={() => handleCustomZoomSubmit()}
-                className="w-16 bg-slate-950 border border-sky-500 text-sky-400 font-mono text-xs px-1.5 py-0.5 rounded text-center focus:outline-none"
-              />
-              <span className="text-xs text-sky-400 font-mono ml-0.5">x</span>
-            </form>
-          ) : (
-            <div className="flex items-center space-x-1">
-              <button
-                onClick={() => setIsEditingZoom(true)}
-                className="font-mono text-xs text-sky-400 hover:text-sky-300 bg-slate-800/80 hover:bg-slate-800 px-2 py-1 rounded transition font-semibold"
-                title="Click to enter custom magnification value"
-              >
-                {currentMag.toFixed(1)}x
-              </button>
-
-              {/* Presets Dropdown */}
-              <div className="relative">
+          {/* Editable Custom Zoom Input & Presets Menu */}
+          <div className="relative">
+            <div className="flex items-center space-x-1 bg-slate-800/80 border border-slate-700 rounded px-2 py-1">
+              {isEditingZoom ? (
+                <form onSubmit={handleCustomZoomSubmit} className="flex items-center">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="100"
+                    value={customZoomInput}
+                    onChange={(e) => setCustomZoomInput(e.target.value)}
+                    onBlur={() => setIsEditingZoom(false)}
+                    autoFocus
+                    className="w-12 bg-slate-900 text-white text-xs font-mono px-1 py-0.5 rounded outline-none border border-sky-500"
+                  />
+                  <span className="text-xs font-mono text-slate-400 ml-0.5">x</span>
+                </form>
+              ) : (
                 <button
-                  onClick={() => setShowDropdown(!showDropdown)}
-                  className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition"
-                  title="Select Objective Power Preset"
+                  onClick={() => setIsEditingZoom(true)}
+                  className="text-xs font-mono font-semibold text-sky-400 hover:text-sky-300 transition"
+                  title="Click to enter custom zoom magnification"
                 >
-                  <ChevronDown className="w-3.5 h-3.5" />
+                  {currentMag.toFixed(1)}x
                 </button>
+              )}
 
-                {showDropdown && (
-                  <div className="absolute right-0 mt-2 w-28 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl py-1 z-30">
-                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-slate-400 font-semibold border-b border-slate-800">
-                      Presets
-                    </div>
-                    {ZOOM_PRESETS.map((preset) => (
-                      <button
-                        key={preset}
-                        onClick={() => {
-                          setTargetMagnification(preset);
-                          setShowDropdown(false);
-                        }}
-                        className="w-full text-left px-3 py-1.5 text-xs text-slate-200 hover:bg-sky-600 hover:text-white flex items-center justify-between font-mono transition"
-                      >
-                        <span>{preset}x</span>
-                        {Math.abs(currentMag - preset) < 0.2 && (
-                          <Check className="w-3.5 h-3.5 text-sky-400" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <button
+                onClick={() => setShowDropdown(!showDropdown)}
+                className="p-0.5 text-slate-400 hover:text-white transition"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
             </div>
-          )}
+
+            {/* Presets Dropdown */}
+            {showDropdown && (
+              <div className="absolute right-0 mt-2 w-32 bg-slate-900 border border-slate-800 rounded-lg shadow-xl py-1 z-20">
+                <div className="px-3 py-1 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                  Presets
+                </div>
+                {ZOOM_PRESETS.map((power) => (
+                  <button
+                    key={power}
+                    onClick={() => applyPower(power)}
+                    className="w-full px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-sky-600 hover:text-white flex items-center justify-between transition font-mono"
+                  >
+                    <span>{power}x</span>
+                    {Math.abs(currentMag - power) < 0.2 && (
+                      <Check className="w-3 h-3 text-sky-400" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Calibrated Continuous Dynamic Scalebar */}
-      <div className="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur border border-slate-700 px-3 py-1.5 rounded-lg shadow-lg z-10 text-white flex flex-col items-center">
-        <div
-          className="h-1 bg-sky-400 border-x border-white mb-1 transition-all duration-150"
-          style={{ width: `${scalebarWidthPx}px` }}
-        />
-        <span className="text-[11px] font-mono text-slate-200 font-medium">{scaleLengthUm} µm</span>
+      {/* Main OSD Container */}
+      <div ref={containerRef} className="flex-1 w-full h-full cursor-grab active:cursor-grabbing" />
+
+      {/* Continuous Calibrated Dynamic Scalebar */}
+      <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
+        <div className="bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg p-2 shadow-lg flex flex-col items-center">
+          <div
+            className="h-1.5 bg-sky-400 rounded-full mb-1 transition-all duration-150 shadow-sm"
+            style={{ width: `${scalebarWidthPx}px` }}
+          />
+          <div className="text-[10px] font-mono font-semibold text-slate-300 tracking-wider">
+            {scaleLengthUm >= 1000 ? `${scaleLengthUm / 1000} mm` : `${scaleLengthUm} µm`}
+          </div>
+        </div>
       </div>
     </div>
   );
