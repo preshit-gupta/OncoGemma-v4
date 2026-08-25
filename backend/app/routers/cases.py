@@ -1,0 +1,181 @@
+import uuid
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from app.core.db import get_db
+from app.core.auth import get_current_user, CurrentUser
+from app.core.config import settings
+from app.models.case import Case
+from app.models.slide import Slide
+from app.models.stage_execution import StageExecution
+from app.models.audit import AuditEvent
+from app.schemas.case import (
+    CaseResponse,
+    SlideUploadUrlRequest,
+    SlideUploadUrlResponse,
+    SlideFinalizeRequest,
+    CaseDetailResponse
+)
+
+router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
+
+@router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
+def create_case(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    case_obj = Case(created_by=user.id)
+    db.add(case_obj)
+    db.commit()
+    db.refresh(case_obj)
+
+    # Log audit event
+    audit = AuditEvent(
+        case_id=str(case_obj.id),
+        actor=user.id,
+        event_type="case_created",
+        payload={"created_by": user.id}
+    )
+    db.add(audit)
+    db.commit()
+
+    return case_obj
+
+@router.get("", response_model=list[CaseResponse])
+def list_cases(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    stmt = select(Case).order_by(Case.created_at.desc())
+    cases = db.scalars(stmt).all()
+    return cases
+
+@router.post("/{case_id}/slide/upload-url", response_model=SlideUploadUrlResponse)
+def get_slide_upload_url(
+    case_id: uuid.UUID,
+    req: SlideUploadUrlRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    file_uuid = uuid.uuid4()
+    ext = req.filename.rsplit(".", 1)[-1].lower() if "." in req.filename else "svs"
+    
+    # Path per PRD: og-{env}-raw/cases/{case_id}/{uuid4()}.{ext} (no patient identifiers)
+    gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{file_uuid}.{ext}"
+    
+    # In local dev / emulator mode, provide upload path or session URI
+    upload_url = f"{settings.STORAGE_EMULATOR_HOST}/upload/storage/v1/b/{settings.GCS_RAW_BUCKET}/o?uploadType=resumable&name=cases/{case_id}/{file_uuid}.{ext}"
+
+    return SlideUploadUrlResponse(
+        upload_url=upload_url,
+        gcs_uri=gcs_uri
+    )
+
+@router.post("/{case_id}/slide/finalize", status_code=status.HTTP_202_ACCEPTED)
+def finalize_slide_upload(
+    case_id: uuid.UUID,
+    req: SlideFinalizeRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    # Create slide record
+    slide_obj = Slide(
+        case_id=case_id,
+        gcs_uri_original=req.gcs_uri,
+        checksum_sha256=req.client_sha256
+    )
+    db.add(slide_obj)
+    
+    # Queue 'ingest' stage_execution
+    stage_exec = StageExecution(
+        case_id=case_id,
+        stage="ingest",
+        attempt=1,
+        status="queued",
+        input_ref={"gcs_uri_original": req.gcs_uri, "slide_id": str(slide_obj.id)}
+    )
+    db.add(stage_exec)
+    
+    # Audit event
+    audit = AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="slide_uploaded",
+        stage="ingest",
+        payload={"gcs_uri": req.gcs_uri, "slide_id": str(slide_obj.id)}
+    )
+    db.add(audit)
+    
+    db.commit()
+    db.refresh(slide_obj)
+    db.refresh(stage_exec)
+
+    return {
+        "status": "queued",
+        "slide_id": str(slide_obj.id),
+        "stage_execution_id": str(stage_exec.id)
+    }
+
+@router.get("/{case_id}", response_model=CaseDetailResponse)
+def get_case_detail(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    slides = db.scalars(select(Slide).where(Slide.case_id == case_id)).all()
+    stages = db.scalars(select(StageExecution).where(StageExecution.case_id == case_id).order_by(StageExecution.started_at.asc())).all()
+
+    slides_data = [
+        {
+            "id": str(s.id),
+            "gcs_uri_original": s.gcs_uri_original,
+            "gcs_uri_pyramid": s.gcs_uri_pyramid,
+            "format": s.format,
+            "scanner": s.scanner,
+            "mpp_x": s.mpp_x,
+            "mpp_y": s.mpp_y,
+            "base_mag": s.base_mag,
+            "width_px": s.width_px,
+            "height_px": s.height_px,
+            "checksum_sha256": s.checksum_sha256,
+            "label_stripped_at": s.label_stripped_at.isoformat() if s.label_stripped_at else None
+        }
+        for s in slides
+    ]
+
+    stages_data = [
+        {
+            "id": str(st.id),
+            "stage": st.stage,
+            "attempt": st.attempt,
+            "status": st.status,
+            "output_ref": st.output_ref,
+            "error": st.error,
+            "started_at": st.started_at.isoformat() if st.started_at else None,
+            "completed_at": st.completed_at.isoformat() if st.completed_at else None
+        }
+        for st in stages
+    ]
+
+    return CaseDetailResponse(
+        id=case_obj.id,
+        created_by=case_obj.created_by,
+        status=case_obj.status,
+        created_at=case_obj.created_at,
+        slides=slides_data,
+        stages=stages_data
+    )

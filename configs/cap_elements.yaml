@@ -1,0 +1,22 @@
+# CAP Protocol Elements Value Set
+
+histologic_types:
+  - id: IDC-NST
+    name: Invasive Breast Carcinoma of No Special Type (Infiltrating Ductal)
+  - id: ILC
+    name: Invasive Lobular Carcinoma
+  - id: mucinous
+    name: Mucinous Carcinoma
+  - id: tubular
+    name: Tubular Carcinoma
+  - id: papillary
+    name: Invasive Papillary Carcinoma
+  - id: metaplastic
+    name: Metaplastic Carcinoma
+  - id: other
+    name: Other / Special Type
+
+grade_descriptions:
+  1: Well differentiated (Score 3-5)
+  2: Moderately differentiated (Score 6-7)
+  3: Poorly differentiated (Score 8-9)
