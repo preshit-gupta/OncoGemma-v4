@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, RefreshCcw, Info, X } from "lucide-react";
-import { fetchCaseDetail, CaseDetail } from "@/lib/api";
+import { ArrowLeft, RefreshCcw, Info, X, Microscope, AlertTriangle } from "lucide-react";
+import { fetchCaseDetail, CaseDetail, retryStage } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
 import { StageRail } from "@/components/viewer/StageRail";
 import { OpenSeadragonViewer } from "@/components/viewer/OpenSeadragonViewer";
@@ -29,11 +29,25 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 3000);
+    const interval = setInterval(loadData, 2500);
     return () => clearInterval(interval);
   }, [caseId]);
 
   const slide = caseDetail?.slides?.[0];
+  const ingestStage = caseDetail?.stages?.find((s) => s.stage === "ingest");
+  const isIngestDone = ingestStage?.status === "completed" || ingestStage?.status === "done";
+  const isIngestRunning = ingestStage?.status === "running" || ingestStage?.status === "queued" || !ingestStage;
+  const isIngestFailed = ingestStage?.status === "failed";
+
+  const handleRetryIngest = async () => {
+    try {
+      await retryStage(caseId, "ingest");
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to retry ingest stage");
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-900">
@@ -103,6 +117,39 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
           {loading ? (
             <div className="flex items-center justify-center h-full text-slate-400 text-sm">
               Loading slide workspace...
+            </div>
+          ) : isIngestRunning ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
+              <div className="relative w-16 h-16 flex items-center justify-center">
+                <div className="absolute inset-0 rounded-full border-4 border-sky-500/20 border-t-sky-500 animate-spin" />
+                <Microscope className="w-8 h-8 text-sky-400" />
+              </div>
+              <div className="text-center max-w-md">
+                <h3 className="text-base font-bold text-white tracking-tight">Processing Whole-Slide Image</h3>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  Extracting WSI metadata, streaming raw slide to Cloud Storage (<span className="font-mono text-sky-400">gs://oncogemma-dev-raw</span>), and generating multi-resolution pyramid tiles...
+                </p>
+                <div className="mt-4 inline-flex items-center space-x-2 text-[11px] font-mono text-sky-400 bg-sky-950/60 border border-sky-800/80 px-3 py-1.5 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+                  <span>Pipeline Worker Active</span>
+                </div>
+              </div>
+            </div>
+          ) : isIngestFailed ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-300 space-y-4 bg-slate-950 p-8">
+              <AlertTriangle className="w-12 h-12 text-rose-500" />
+              <div className="text-center max-w-md">
+                <h3 className="text-base font-bold text-white">Slide Ingest Failed</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  {ingestStage?.error || "Failed to process slide file during pyramid tile generation."}
+                </p>
+                <button
+                  onClick={handleRetryIngest}
+                  className="mt-4 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow"
+                >
+                  Retry Ingest Stage
+                </button>
+              </div>
             </div>
           ) : (
             <OpenSeadragonViewer

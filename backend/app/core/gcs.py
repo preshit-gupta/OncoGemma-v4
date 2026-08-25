@@ -22,7 +22,7 @@ class LocalBlobEmulator:
     def exists(self) -> bool:
         return os.path.exists(self.file_path)
 
-    def upload_from_filename(self, local_filename: str, content_type: str | None = None):
+    def upload_from_filename(self, local_filename: str, content_type: str | None = None, timeout: float | None = None):
         os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
         shutil.copy2(local_filename, self.file_path)
 
@@ -32,7 +32,7 @@ class LocalBlobEmulator:
         with open(self.file_path, "rb") as f:
             return f.read()
 
-    def download_to_filename(self, destination_filename: str):
+    def download_to_filename(self, destination_filename: str, timeout: float | None = None):
         os.makedirs(os.path.dirname(destination_filename), exist_ok=True)
         if os.path.exists(self.file_path):
             shutil.copy2(self.file_path, destination_filename)
@@ -58,29 +58,18 @@ def get_gcs_client():
     use_real = os.getenv("USE_REAL_GCS", "true").lower() in ("true", "1") or settings.USE_REAL_GCS
     if use_real and not os.getenv("STORAGE_EMULATOR_HOST"):
         try:
+            # Fast 0.5-second socket pre-flight to verify Google Cloud Storage API availability
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(("storage.googleapis.com", 443))
+            s.close()
+
             from google.cloud import storage
             client = storage.Client(project=settings.GCP_PROJECT_ID)
             return client
         except Exception as e:
-            print(f"[GCS Core Note] Real GCS connection fallback: {e}")
+            print(f"[GCS Core Note] Real GCS connection unreachable/fallback: {e}")
 
-    emulator_host = os.path.getenv("STORAGE_EMULATOR_HOST") or settings.STORAGE_EMULATOR_HOST
-    if emulator_host and "localhost" in emulator_host:
-        try:
-            parts = emulator_host.replace("http://", "").replace("https://", "").split(":")
-            host = parts[0]
-            port = int(parts[1]) if len(parts) > 1 else 80
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.2)
-            s.connect((host, port))
-            s.close()
-
-            from google.cloud import storage
-            os.environ["STORAGE_EMULATOR_HOST"] = emulator_host
-            return storage.Client.create_anonymous_client()
-        except Exception:
-            pass
-    
     local_storage_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../fake_gcs"))
     return LocalClientEmulator(local_storage_dir)
 

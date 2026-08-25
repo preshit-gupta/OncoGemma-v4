@@ -2,7 +2,7 @@ import time
 import uuid
 import traceback
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal, engine
@@ -12,6 +12,20 @@ from worker.ingest import run_ingest
 HANDLERS = {
     "ingest": run_ingest
 }
+
+def reset_stuck_running_stages():
+    """Reset any orphan stages left in 'running' state by previous worker restarts."""
+    db = SessionLocal()
+    try:
+        stmt = update(StageExecution).where(StageExecution.status == "running").values(status="queued")
+        res = db.execute(stmt)
+        db.commit()
+        if res.rowcount > 0:
+            print(f"[Worker Startup] Reset {res.rowcount} stuck 'running' stages back to 'queued'...")
+    except Exception as e:
+        print(f"[Worker Startup Reset Note] {e}")
+    finally:
+        db.close()
 
 def poll_and_execute_single_task():
     """
@@ -67,6 +81,7 @@ def poll_and_execute_single_task():
 
 def run_worker_loop():
     print(f"[Worker] Starting OncoGemma stage worker poll loop. Engine: {engine.dialect.name}. Handlers: {list(HANDLERS.keys())}")
+    reset_stuck_running_stages()
     while True:
         try:
             executed = poll_and_execute_single_task()

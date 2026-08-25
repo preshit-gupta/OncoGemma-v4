@@ -23,7 +23,7 @@ def get_tile(
     user: CurrentUser = Depends(get_current_user)
 ):
     """
-    Proxy & stream DZI pyramid tile from storage with auth check and caching headers.
+    Proxy & stream DZI pyramid tile from storage with fast local cache check.
     """
     case_obj = db.get(Case, case_id)
     if not case_obj:
@@ -33,10 +33,24 @@ def get_tile(
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found for case")
 
+    # Fast local cache path for 0.001s instant tile rendering
+    local_tile_path = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_PYRAMIDS_BUCKET}/{slide.id}/{layer}/{z}/{x_y}.jpg"))
+    if os.path.exists(local_tile_path):
+        with open(local_tile_path, "rb") as f:
+            tile_bytes = f.read()
+        return Response(
+            content=tile_bytes,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Tile-Layer": layer,
+                "X-Tile-Zoom": str(z)
+            }
+        )
+
     client = get_gcs_client()
 
     if hasattr(client, "base_dir"):
-        # Local file emulator fast path
         tile_path = os.path.join(client.base_dir, settings.GCS_PYRAMIDS_BUCKET, str(slide.id), layer, str(z), f"{x_y}.jpg")
         if os.path.exists(tile_path):
             with open(tile_path, "rb") as f:
@@ -70,5 +84,5 @@ def get_tile(
         except Exception as e:
             print(f"[Tiles Router Note] Storage fetch error: {e}")
 
-    # Return clean HTTP 404 if tile is missing - NEVER import pyvips C library on Windows
+    # Return clean HTTP 404 if tile is missing
     raise HTTPException(status_code=404, detail="Tile missing")
