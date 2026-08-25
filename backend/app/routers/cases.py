@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -54,6 +54,46 @@ def list_cases(
     stmt = select(Case).order_by(Case.created_at.desc())
     cases = db.scalars(stmt).all()
     return cases
+
+@router.delete("", status_code=status.HTTP_200_OK)
+def clear_all_cases(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """Clear all diagnostic cases and audit logs."""
+    cases = db.scalars(select(Case)).all()
+    count = len(cases)
+    for c in cases:
+        db.delete(c)
+    db.commit()
+
+    # Clear local fake_gcs files if emulator
+    client = get_gcs_client()
+    if hasattr(client, "base_dir") and os.path.exists(client.base_dir):
+        for item in os.listdir(client.base_dir):
+            item_path = os.path.join(client.base_dir, item)
+            try:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception:
+                pass
+
+    return {"status": "cleared", "deleted_count": count}
+
+@router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_case(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """Delete a single diagnostic case."""
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    db.delete(case_obj)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @router.post("/{case_id}/slide/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_slide_file(
