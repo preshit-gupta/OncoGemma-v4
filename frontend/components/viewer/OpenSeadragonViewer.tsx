@@ -25,6 +25,7 @@ export function OpenSeadragonViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);
   const [scaleLengthUm, setScaleLengthUm] = useState<number>(100);
+  const [scalebarWidthPx, setScalebarWidthPx] = useState<number>(120);
   const [currentMag, setCurrentMag] = useState<number>(1.0);
   const [isEditingZoom, setIsEditingZoom] = useState<boolean>(false);
   const [customZoomInput, setCustomZoomInput] = useState<string>("1.0");
@@ -72,15 +73,19 @@ export function OpenSeadragonViewer({
       const imageZoom = viewer.viewport.viewportToImageZoom(zoom);
       
       const umPerPx = mppX / (imageZoom || 1.0);
-      const targetUm = 200 * umPerPx;
+      const targetUm = 120 * umPerPx;
       
-      const niceScales = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
-      const chosenScale = niceScales.reduce((prev, curr) => 
+      const niceScales = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+      const chosenScaleUm = niceScales.reduce((prev, curr) => 
         Math.abs(curr - targetUm) < Math.abs(prev - targetUm) ? curr : prev
       );
 
+      const actualWidthPx = Math.max(30, Math.min(220, Math.round(chosenScaleUm / umPerPx)));
+      
+      setScaleLengthUm(chosenScaleUm);
+      setScalebarWidthPx(actualWidthPx);
+
       const calculatedMag = imageZoom * (40.0 * 0.25 / mppX);
-      setScaleLengthUm(chosenScale);
       setCurrentMag(calculatedMag);
       if (!isEditingZoom) {
         setCustomZoomInput(calculatedMag.toFixed(1));
@@ -89,6 +94,7 @@ export function OpenSeadragonViewer({
 
     viewer.addHandler("zoom", updateScalebar);
     viewer.addHandler("open", updateScalebar);
+    viewer.addHandler("animation-finish", updateScalebar);
 
     return () => {
       if (viewerRef.current) {
@@ -258,13 +264,13 @@ export function OpenSeadragonViewer({
         </div>
       </div>
 
-      {/* Calibrated Dynamic Scalebar */}
+      {/* Calibrated Continuous Dynamic Scalebar */}
       <div className="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur border border-slate-700 px-3 py-1.5 rounded-lg shadow-lg z-10 text-white flex flex-col items-center">
         <div
-          className="h-1 bg-sky-400 border-x border-white mb-1 transition-all"
-          style={{ width: "120px" }}
+          className="h-1 bg-sky-400 border-x border-white mb-1 transition-all duration-150"
+          style={{ width: `${scalebarWidthPx}px` }}
         />
-        <span className="text-[11px] font-mono text-slate-200">{scaleLengthUm} µm</span>
+        <span className="text-[11px] font-mono text-slate-200 font-medium">{scaleLengthUm} µm</span>
       </div>
     </div>
   );
