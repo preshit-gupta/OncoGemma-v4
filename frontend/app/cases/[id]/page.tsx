@@ -1,15 +1,14 @@
 "use client";
 
-import React, { useEffect, useState, use } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, RefreshCcw } from "lucide-react";
 import { fetchCaseDetail, CaseDetail } from "@/lib/api";
 import { StageRail } from "@/components/viewer/StageRail";
 import { OpenSeadragonViewer } from "@/components/viewer/OpenSeadragonViewer";
 
-export default function CaseWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
-  const resolvedParams = use(params);
-  const caseId = resolvedParams.id;
+export default function CaseWorkspacePage({ params }: { params: { id: string } }) {
+  const caseId = params.id;
 
   const [caseDetail, setCaseDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
