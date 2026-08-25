@@ -70,5 +70,5 @@ def get_tile(
         except Exception as e:
             print(f"[Tiles Router Note] Storage fetch error: {e}")
 
-    # Return 404 so OpenSeadragon dynamically interpolates nearest level without solid white tiles
+    # Return clean HTTP 404 if tile is missing - NEVER import pyvips C library on Windows
     raise HTTPException(status_code=404, detail="Tile missing")

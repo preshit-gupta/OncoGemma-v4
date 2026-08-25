@@ -2,6 +2,7 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
+    ENV: str = os.getenv("ENV", "dev")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev")
     DEBUG: bool = True
     
