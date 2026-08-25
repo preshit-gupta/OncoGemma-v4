@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { Upload, Plus, FileText, ArrowRight, CheckCircle2, Clock } from "lucide-react";
-import { fetchCases, createCase, getUploadUrl, finalizeSlideUpload, Case } from "@/lib/api";
+import { Upload, Plus, FileText, ArrowRight, CheckCircle2 } from "lucide-react";
+import { fetchCases, createCase, uploadSlideFile, Case } from "@/lib/api";
 
 export default function CasesPage() {
   const [cases, setCases] = useState<Case[]>([]);
@@ -31,25 +31,21 @@ export default function CasesPage() {
     if (!file) return;
 
     setUploading(true);
-    setUploadProgress(10);
+    setUploadProgress(20);
 
     try {
       // 1. Create case
       const newCase = await createCase();
-      setUploadProgress(30);
+      setUploadProgress(40);
 
-      // 2. Get upload URL
-      const { gcs_uri } = await getUploadUrl(newCase.id, file.name, file.size);
-      setUploadProgress(60);
-
-      // 3. Finalize upload & queue ingest worker
-      await finalizeSlideUpload(newCase.id, gcs_uri);
+      // 2. Upload actual slide file bytes
+      await uploadSlideFile(newCase.id, file);
       setUploadProgress(100);
 
       await loadCases();
     } catch (err) {
       console.error(err);
-      alert("Failed to upload slide");
+      alert("Failed to upload slide file");
     } finally {
       setUploading(false);
     }
@@ -74,7 +70,7 @@ export default function CasesPage() {
           <span>New Case & Upload WSI</span>
           <input
             type="file"
-            accept=".svs,.ndpi,.mrxs,.tif,.tiff"
+            accept=".svs,.ndpi,.mrxs,.tif,.tiff,.jpg,.jpeg,.png"
             className="hidden"
             onChange={handleCreateAndUpload}
             disabled={uploading}
@@ -86,7 +82,7 @@ export default function CasesPage() {
       {uploading && (
         <div className="mb-6 p-4 bg-sky-50 border border-sky-200 rounded-lg flex flex-col space-y-2">
           <div className="flex items-center justify-between text-xs font-semibold text-sky-800">
-            <span>Uploading & Registering Slide...</span>
+            <span>Uploading & Processing Slide File...</span>
             <span>{uploadProgress}%</span>
           </div>
           <div className="w-full bg-sky-200 h-2 rounded-full overflow-hidden">
@@ -106,7 +102,7 @@ export default function CasesPage() {
           <Upload className="w-10 h-10 text-slate-300 mx-auto mb-3" />
           <h3 className="text-base font-semibold text-slate-700">No active cases</h3>
           <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-            Upload your first H&E breast carcinoma WSI slide (.svs, .ndpi) to get started with OncoGemma.
+            Upload your first H&E breast carcinoma WSI slide (.svs, .ndpi, .tif, .jpg, .png) to get started with OncoGemma.
           </p>
         </div>
       ) : (

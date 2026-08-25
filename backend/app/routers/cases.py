@@ -1,12 +1,16 @@
 import uuid
+import os
+import shutil
+import tempfile
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.db import get_db
 from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
+from app.core.gcs import get_gcs_client
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -51,6 +55,76 @@ def list_cases(
     cases = db.scalars(stmt).all()
     return cases
 
+@router.post("/{case_id}/slide/upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_slide_file(
+    case_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    """Direct file upload endpoint for WSIs and slide images."""
+    case_obj = db.get(Case, case_id)
+    if not case_obj:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    file_uuid = uuid.uuid4()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "svs"
+    
+    gcs_uri = f"gs://{settings.GCS_RAW_BUCKET}/cases/{case_id}/{file_uuid}.{ext}"
+    
+    client = get_gcs_client()
+    bucket = client.bucket(settings.GCS_RAW_BUCKET)
+    blob_name = f"cases/{case_id}/{file_uuid}.{ext}"
+    blob = bucket.blob(blob_name)
+
+    # Save uploaded file bytes to raw storage
+    temp_dir = tempfile.mkdtemp(prefix="og_upload_")
+    local_temp_path = os.path.join(temp_dir, f"upload.{ext}")
+    try:
+        with open(local_temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        blob.upload_from_filename(local_temp_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Create slide record
+    slide_obj = Slide(
+        case_id=case_id,
+        gcs_uri_original=gcs_uri
+    )
+    db.add(slide_obj)
+    db.flush()
+    
+    # Queue 'ingest' stage_execution
+    stage_exec = StageExecution(
+        case_id=case_id,
+        stage="ingest",
+        attempt=1,
+        status="queued",
+        input_ref={"gcs_uri_original": gcs_uri, "slide_id": str(slide_obj.id)}
+    )
+    db.add(stage_exec)
+    
+    # Audit event
+    audit = AuditEvent(
+        case_id=str(case_id),
+        actor=user.id,
+        event_type="slide_uploaded",
+        stage="ingest",
+        payload={"gcs_uri": gcs_uri, "slide_id": str(slide_obj.id), "filename": file.filename}
+    )
+    db.add(audit)
+    
+    db.commit()
+
+    return {
+        "status": "queued",
+        "slide_id": str(slide_obj.id),
+        "stage_execution_id": str(stage_exec.id),
+        "gcs_uri": gcs_uri
+    }
+
 @router.post("/{case_id}/slide/upload-url", response_model=SlideUploadUrlResponse)
 def get_slide_upload_url(
     case_id: uuid.UUID,
@@ -84,7 +158,6 @@ def finalize_slide_upload(
     if not case_obj:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Create slide record and flush so slide_obj.id is generated
     slide_obj = Slide(
         case_id=case_id,
         gcs_uri_original=req.gcs_uri,
@@ -93,7 +166,6 @@ def finalize_slide_upload(
     db.add(slide_obj)
     db.flush()
     
-    # Queue 'ingest' stage_execution
     stage_exec = StageExecution(
         case_id=case_id,
         stage="ingest",
@@ -103,7 +175,6 @@ def finalize_slide_upload(
     )
     db.add(stage_exec)
     
-    # Audit event
     audit = AuditEvent(
         case_id=str(case_id),
         actor=user.id,

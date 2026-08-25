@@ -1,6 +1,7 @@
 import os
 import sys
 import uuid
+import math
 import hashlib
 import tempfile
 import shutil
@@ -76,6 +77,8 @@ def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
     Returns path to the output DZI file.
     """
     dzi_base = os.path.join(output_dir, "pyramid")
+    dzi_files_dir = dzi_base + "_files"
+    os.makedirs(dzi_files_dir, exist_ok=True)
     
     try:
         import pyvips
@@ -84,25 +87,54 @@ def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
             dzi_base,
             tile_size=256,
             overlap=0,
-            suffix=".jpg[Q=80]"
+            suffix=".jpg[Q=85]"
         )
         return dzi_base + ".dzi"
     except Exception as e:
-        print(f"[Ingest Worker Note] Pyvips C library unavailable ({e}). Using PIL fallback.")
+        print(f"[Ingest Worker Note] Pyvips C library unavailable ({e}). Using PIL DZI pyramid generator.")
         from PIL import Image
-        dzi_files_dir = dzi_base + "_files"
-        os.makedirs(dzi_files_dir, exist_ok=True)
         
         pil_img = Image.open(filepath)
         if pil_img.mode != "RGB":
             pil_img = pil_img.convert("RGB")
             
-        # Create tile at level 10 (256x256)
-        level_dir = os.path.join(dzi_files_dir, "10")
-        os.makedirs(level_dir, exist_ok=True)
-        tile_path = os.path.join(level_dir, "0_0.jpg")
-        
-        pil_img.resize((256, 256)).save(tile_path, "JPEG", quality=80)
+        width, height = pil_img.size
+        max_dim = max(width, height)
+        max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 10
+
+        # Generate pyramid levels (8 to max_level)
+        for level in range(8, max_level + 1):
+            level_scale = 2 ** (level - max_level)
+            level_w = max(1, int(round(width * level_scale)))
+            level_h = max(1, int(round(height * level_scale)))
+            
+            resized = pil_img.resize((level_w, level_h), Image.Resampling.LANCZOS)
+            
+            level_dir = os.path.join(dzi_files_dir, str(level))
+            os.makedirs(level_dir, exist_ok=True)
+            
+            tile_size = 256
+            cols = int(math.ceil(level_w / tile_size))
+            rows = int(math.ceil(level_h / tile_size))
+            
+            for c in range(cols):
+                for r in range(rows):
+                    left = c * tile_size
+                    upper = r * tile_size
+                    right = min(left + tile_size, level_w)
+                    lower = min(upper + tile_size, level_h)
+                    
+                    crop_box = (left, upper, right, lower)
+                    tile_img = resized.crop(crop_box)
+                    
+                    if tile_img.size != (256, 256):
+                        canvas = Image.new("RGB", (256, 256), (255, 255, 255))
+                        canvas.paste(tile_img, (0, 0))
+                        tile_img = canvas
+                        
+                    tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
+                    tile_img.save(tile_path, "JPEG", quality=85)
+
         return dzi_base + ".dzi"
 
 def upload_dzi_tree_to_gcs(dzi_files_dir: str, slide_id: str):
