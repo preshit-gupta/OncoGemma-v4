@@ -1,0 +1,26 @@
+# OncoGemma Clinical Scoring Configuration
+
+mitotic_score:
+  basis: per_mm2
+  # Elston-Ellis thresholds mapped to mm² (standard 10 HPFs = 2.74 mm² or 2.157 mm² computed area)
+  thresholds:
+    score2_min: 3.65 # mitoses/mm²
+    score3_min: 7.30 # mitoses/mm²
+  display_classic_equivalent: true
+
+tubule_formation:
+  thresholds:
+    score1_min_percent: 75.0 # >75% glandular structures
+    score2_min_percent: 10.0 # 10-75% glandular structures
+    # <10% -> score 3
+
+nottingham_grading:
+  # Grade 1: 3-5
+  # Grade 2: 6-7
+  # Grade 3: 8-9
+  grade1_max_sum: 5
+  grade2_max_sum: 7
+
+hpf:
+  radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
+  count: 10
