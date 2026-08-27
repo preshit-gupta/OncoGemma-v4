@@ -5,6 +5,16 @@ import OpenSeadragon from "openseadragon";
 import { ZoomIn, ZoomOut, Maximize, ChevronDown, Check, Layers, Image as ImageIcon, Info } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 
+export interface ViewerHotspot {
+  id: string;
+  polygon_um: number[][];
+  area_mm2?: number;
+  prob_mean?: number;
+  prob_max?: number;
+  source?: string;
+  excluded?: boolean;
+}
+
 interface OpenSeadragonViewerProps {
   caseId: string;
   mppX?: number;
@@ -12,6 +22,14 @@ interface OpenSeadragonViewerProps {
   imageWidthPx?: number;
   imageHeightPx?: number;
   layer?: "orig" | "norm";
+  overlayImageUri?: string | null;
+  overlayOpacity?: number;
+  showOverlay?: boolean;
+  hotspots?: ViewerHotspot[];
+  selectedHotspotId?: string | null;
+  onSelectHotspot?: (id: string) => void;
+  isAddingRoiMode?: boolean;
+  onAddRoiClick?: (x_um: number, y_um: number) => void;
 }
 
 const ZOOM_PRESETS = [2.5, 5, 10, 20, 40];
@@ -19,9 +37,18 @@ const ZOOM_PRESETS = [2.5, 5, 10, 20, 40];
 export function OpenSeadragonViewer({
   caseId,
   mppX = 0.25,
+  mppY = 0.25,
   imageWidthPx = 2048,
   imageHeightPx = 2048,
-  layer = "orig"
+  layer = "orig",
+  overlayImageUri = null,
+  overlayOpacity = 0.6,
+  showOverlay = true,
+  hotspots = [],
+  selectedHotspotId = null,
+  onSelectHotspot,
+  isAddingRoiMode = false,
+  onAddRoiClick
 }: OpenSeadragonViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);
@@ -32,6 +59,9 @@ export function OpenSeadragonViewer({
   const [customZoomInput, setCustomZoomInput] = useState<string>("1.0");
   const [showDropdown, setShowDropdown] = useState<boolean>(false);
   const [activeLayer, setActiveLayer] = useState<"orig" | "norm">(layer);
+  const [svgPolygons, setSvgPolygons] = useState<
+    Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean }>
+  >([]);
 
   const isNormFallbackToOrig = activeLayer === "norm" && currentMag > 10.0;
 
@@ -75,35 +105,39 @@ export function OpenSeadragonViewer({
 
     viewerRef.current = viewer;
 
-    const updateScalebar = () => {
-      if (!viewer.viewport) return;
-      const zoom = viewer.viewport.getZoom(true);
-      const imageZoom = viewer.viewport.viewportToImageZoom(zoom);
-      
-      const umPerPx = mppX / (imageZoom || 1.0);
-      const targetUm = 120 * umPerPx;
-      
-      const niceScales = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
-      const chosenScaleUm = niceScales.reduce((prev, curr) => 
-        Math.abs(curr - targetUm) < Math.abs(prev - targetUm) ? curr : prev
-      );
-
-      const actualWidthPx = Math.max(30, Math.min(220, Math.round(chosenScaleUm / umPerPx)));
-      
-      setScaleLengthUm(chosenScaleUm);
-      setScalebarWidthPx(actualWidthPx);
-
-      const calculatedMag = imageZoom * (40.0 * 0.25 / mppX);
-      setCurrentMag(calculatedMag);
-      if (!isEditingZoom) {
-        setCustomZoomInput(calculatedMag.toFixed(1));
-      }
-    };
+    if (overlayImageUri) {
+      viewer.addSimpleImage({
+        url: overlayImageUri,
+        opacity: showOverlay ? overlayOpacity : 0.0,
+        x: 0,
+        y: 0,
+        width: 1.0
+      });
+    }
 
     viewer.addHandler("open", () => {
       updateScalebar();
+      updatePolygons();
       if (viewer.viewport) {
         viewer.viewport.goHome(true);
+      }
+    });
+
+    viewer.addHandler("animation", () => {
+      updateScalebar();
+      updatePolygons();
+    });
+
+    viewer.addHandler("canvas-click", (event: any) => {
+      if (!isAddingRoiModeRef.current) return;
+      event.preventUserAction = true;
+      if (!viewer.viewport) return;
+      const vpPoint = viewer.viewport.pointFromPixel(event.position);
+      const imgPoint = viewer.viewport.viewportToImageCoordinates(vpPoint);
+      const x_um = imgPoint.x * mppX;
+      const y_um = imgPoint.y * (mppY || mppX);
+      if (onAddRoiClickRef.current) {
+        onAddRoiClickRef.current(x_um, y_um);
       }
     });
 
@@ -113,7 +147,35 @@ export function OpenSeadragonViewer({
         viewerRef.current = null;
       }
     };
-  }, [caseId, activeLayer, imageWidthPx, imageHeightPx, mppX]);
+  }, [caseId, activeLayer, imageWidthPx, imageHeightPx, mppX, mppY]);
+
+  // Sync heatmap overlay without recreating viewer
+  useEffect(() => {
+    if (!viewerRef.current) return;
+    const count = viewerRef.current.world.getItemCount();
+    if (count > 1) {
+      const overlayItem = viewerRef.current.world.getItemAt(1);
+      if (overlayItem) {
+        overlayItem.setOpacity(showOverlay ? overlayOpacity : 0.0);
+      }
+    }
+  }, [overlayOpacity, showOverlay]);
+
+  // Update SVG polygon coordinates when hotspots change or are added
+  useEffect(() => {
+    updatePolygons();
+  }, [JSON.stringify(hotspots)]);
+
+  // Display glowing target reticle when a hotspot is focused/selected
+  useEffect(() => {
+    if (!selectedHotspotId) return;
+    setFocusedHotspotId(selectedHotspotId);
+    updatePolygons();
+    const timer = setTimeout(() => {
+      setFocusedHotspotId(null);
+    }, 3800);
+    return () => clearTimeout(timer);
+  }, [selectedHotspotId]);
 
   const handleZoomIn = () => {
     if (viewerRef.current?.viewport) {
@@ -280,7 +342,93 @@ export function OpenSeadragonViewer({
       </div>
 
       {/* Main OSD Container */}
-      <div ref={containerRef} className="flex-1 w-full h-full cursor-grab active:cursor-grabbing" />
+      <div 
+        ref={containerRef} 
+        className={`flex-1 w-full h-full relative ${isAddingRoiMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+      >
+        {/* SVG Hotspot Polygons Overlay */}
+        <svg
+          className="absolute inset-0 w-full h-full pointer-events-none z-10"
+          style={{ overflow: "visible" }}
+        >
+          {svgPolygons.map((poly) => {
+            if (poly.excluded) return null;
+            const isSelected = selectedHotspotId === poly.id;
+            return (
+              <g key={poly.id} className="cursor-pointer pointer-events-auto transition-opacity">
+                <polygon
+                  points={poly.points}
+                  fill={isSelected ? "rgba(14, 165, 233, 0.40)" : "rgba(245, 158, 11, 0.28)"}
+                  stroke={isSelected ? "#38bdf8" : "#f59e0b"}
+                  strokeWidth={isSelected ? "3.5" : "2.5"}
+                  strokeDasharray={poly.id.startsWith("user") ? "6,3" : undefined}
+                  className="transition-colors hover:fill-amber-500/50"
+                  onClick={() => onSelectHotspot && onSelectHotspot(poly.id)}
+                />
+                {/* High-Visibility Animated Target Crosshair on Focus */}
+                {focusedHotspotId === poly.id && (
+                  <g transform={`translate(${poly.center.x}, ${poly.center.y})`} className="pointer-events-none">
+                    {/* Animated Outer Pulse Ring */}
+                    <circle
+                      r="40"
+                      fill="rgba(56, 189, 248, 0.15)"
+                      stroke="#38bdf8"
+                      strokeWidth="2.5"
+                      className="animate-ping"
+                    />
+                    {/* Concentric Target Reticle */}
+                    <circle
+                      r="24"
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth="2"
+                      strokeDasharray="4,3"
+                      className="animate-spin"
+                      style={{ animationDuration: "8s" }}
+                    />
+                    <circle
+                      r="7"
+                      fill="rgba(56, 189, 248, 0.5)"
+                      stroke="#ffffff"
+                      strokeWidth="2"
+                    />
+                    {/* Crosshair Ticks (North, South, East, West) */}
+                    <line x1="-34" y1="0" x2="-14" y2="0" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+                    <line x1="14" y1="0" x2="34" y2="0" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+                    <line x1="0" y1="-34" x2="0" y2="-14" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+                    <line x1="0" y1="14" x2="0" y2="34" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+                  </g>
+                )}
+
+                <g transform={`translate(${poly.center.x}, ${poly.center.y})`}>
+                  <rect
+                    x="-32"
+                    y="-12"
+                    width="64"
+                    height="24"
+                    rx="6"
+                    fill="rgba(15, 23, 42, 0.90)"
+                    stroke={isSelected ? "#38bdf8" : "#f59e0b"}
+                    strokeWidth="1.5"
+                    className="shadow-lg"
+                  />
+                  <text
+                    x="0"
+                    y="4"
+                    fill="#ffffff"
+                    fontSize="11"
+                    fontWeight="700"
+                    textAnchor="middle"
+                    className="select-none pointer-events-none font-mono"
+                  >
+                    {poly.id}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
 
       {/* Continuous Calibrated Dynamic Scalebar */}
       <div className="absolute bottom-4 left-4 z-10 pointer-events-none">

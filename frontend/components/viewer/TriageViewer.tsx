@@ -11,7 +11,13 @@ import {
   ArrowRight, 
   Info,
   Loader2,
-  Trash2
+  Trash2,
+  Crosshair,
+  ZoomIn,
+  Eye,
+  X,
+  Layers,
+  Activity
 } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import { OpenSeadragonViewer } from "./OpenSeadragonViewer";
@@ -42,17 +48,36 @@ interface TriageData {
   machine_hotspots: HotspotItem[];
   effective_hotspots: HotspotItem[];
   review_edits: any[];
+  model_versions?: Record<string, string>;
 }
 
-export function TriageViewer({ caseId }: { caseId: string }) {
+interface TriageViewerProps {
+  caseId: string;
+  mppX?: number;
+  mppY?: number;
+  imageWidthPx?: number;
+  imageHeightPx?: number;
+}
+
+export function TriageViewer({
+  caseId,
+  mppX = 0.25,
+  mppY = 0.25,
+  imageWidthPx = 2048,
+  imageHeightPx = 2048,
+}: TriageViewerProps) {
   const [data, setData] = useState<TriageData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
   const [heatmapOpacity, setHeatmapOpacity] = useState<number>(0.6);
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
   const [hotspotsList, setHotspotsList] = useState<HotspotItem[]>([]);
+  const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
+  const [previewHotspot, setPreviewHotspot] = useState<HotspotItem | null>(null);
+  const [modalMag, setModalMag] = useState<"10x" | "20x" | "40x">("10x");
+  const [stainMode, setStainMode] = useState<"norm" | "orig">("norm");
+  const [isAddingRoiMode, setIsAddingRoiMode] = useState<boolean>(false);
   const [noInvasiveTumor, setNoInvasiveTumor] = useState<boolean>(false);
   const [excludeReasonInput, setExcludeReasonInput] = useState<{ [id: string]: string }>({});
 
@@ -94,18 +119,32 @@ export function TriageViewer({ caseId }: { caseId: string }) {
     setHotspotsList((prev) => prev.filter((h) => h.id !== id));
   };
 
-  const handleAddUserHotspot = () => {
-    const newId = `user_${Date.now().toString().slice(-4)}`;
+  const handleAddRoiFromClick = (x_um: number, y_um: number) => {
+    const half_um = 300.0;
+    const polygon = [
+      [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
+      [Number((x_um + half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))],
+      [Number((x_um + half_um).toFixed(2)), Number((y_um + half_um).toFixed(2))],
+      [Number((x_um - half_um).toFixed(2)), Number((y_um + half_um).toFixed(2))],
+      [Number((x_um - half_um).toFixed(2)), Number((y_um - half_um).toFixed(2))]
+    ];
+
+    const userCount = hotspotsList.filter((h) => h.id.startsWith("user_")).length;
+    const newId = `user_${(userCount + 1).toString().padStart(2, "0")}`;
     const newHs: HotspotItem = {
       id: newId,
-      polygon_um: [[1000, 1000], [2000, 1000], [2000, 2000], [1000, 2000]],
-      area_mm2: 1.0,
-      prob_mean: 1.0,
-      prob_max: 1.0,
+      polygon_um: polygon,
+      area_mm2: 0.36,
+      prob_mean: 0.88,
+      prob_max: 0.95,
       source: "pathologist_added",
       excluded: false
     };
+
     setHotspotsList((prev) => [...prev, newHs]);
+    setIsAddingRoiMode(false);
+    setSelectedHotspotId(newId);
+    setPreviewHotspot(newHs);
   };
 
   const handleSaveDraftEdits = async () => {
@@ -192,40 +231,90 @@ export function TriageViewer({ caseId }: { caseId: string }) {
     <div className="w-full h-full flex bg-slate-950 overflow-hidden">
       {/* Left Main Viewport */}
       <div className="flex-1 relative">
-        <OpenSeadragonViewer caseId={caseId} />
+        <OpenSeadragonViewer
+          caseId={caseId}
+          mppX={mppX}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
+          overlayImageUri={`${API_BASE}/api/v1/stages/triage/${caseId}/heatmap`}
+          overlayOpacity={heatmapOpacity}
+          showOverlay={showHeatmap}
+          hotspots={hotspotsList}
+          selectedHotspotId={selectedHotspotId}
+          onSelectHotspot={setSelectedHotspotId}
+          isAddingRoiMode={isAddingRoiMode}
+          onAddRoiClick={handleAddRoiFromClick}
+        />
 
-        {/* Heatmap Overlay Opacity Control floating toolbar */}
-        <div className="absolute top-4 left-4 z-20 bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl flex items-center space-x-3">
-          <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
-            <Flame className="w-4 h-4 text-amber-400" />
-            <span>Tumor Probability Heatmap</span>
+        {/* Interactive Click-to-Add ROI Floating Banner */}
+        {isAddingRoiMode && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-sky-950/95 border-2 border-sky-400 rounded-full px-5 py-2.5 shadow-2xl flex items-center space-x-3 backdrop-blur animate-pulse">
+            <Crosshair className="w-4 h-4 text-sky-400 animate-spin" />
+            <span className="text-xs font-bold text-sky-100">
+              Click anywhere on the Whole Slide Image to add a custom 10× HPF candidate ROI
+            </span>
+            <button
+              onClick={() => setIsAddingRoiMode(false)}
+              className="px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full text-xs font-bold transition border border-slate-700"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {/* Heatmap Overlay Opacity Control & Colormap Legend floating toolbar */}
+        <div className="absolute top-4 left-4 z-20 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl flex flex-col space-y-2.5">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2 text-xs font-semibold text-slate-200">
+              <Flame className="w-4 h-4 text-amber-400" />
+              <span>Tumor Heatmap</span>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showHeatmap}
+                onChange={(e) => setShowHeatmap(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-sky-600"></div>
+            </label>
+
+            {showHeatmap && (
+              <div className="flex items-center space-x-2 border-l border-slate-800 pl-3">
+                <Sliders className="w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={heatmapOpacity}
+                  onChange={(e) => setHeatmapOpacity(parseFloat(e.target.value))}
+                  className="w-16 accent-sky-500 cursor-pointer"
+                />
+                <span className="text-[10px] font-mono text-slate-400">
+                  {Math.round(heatmapOpacity * 100)}%
+                </span>
+              </div>
+            )}
           </div>
 
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showHeatmap}
-              onChange={(e) => setShowHeatmap(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sky-600"></div>
-          </label>
-
+          {/* Colormap Legend */}
           {showHeatmap && (
-            <div className="flex items-center space-x-2 border-l border-slate-800 pl-3">
-              <Sliders className="w-3.5 h-3.5 text-slate-400" />
-              <input
-                type="range"
-                min="0.1"
-                max="1.0"
-                step="0.05"
-                value={heatmapOpacity}
-                onChange={(e) => setHeatmapOpacity(parseFloat(e.target.value))}
-                className="w-20 accent-sky-500 cursor-pointer"
-              />
-              <span className="text-[11px] font-mono text-slate-400">
-                {Math.round(heatmapOpacity * 100)}%
-              </span>
+            <div className="pt-2 border-t border-slate-800/80 flex items-center space-x-2 text-[10px] text-slate-400">
+              <span className="font-semibold text-slate-500">Scale:</span>
+              <div className="flex items-center space-x-1">
+                <div className="w-2.5 h-2.5 rounded-sm bg-[#440154]" />
+                <span>Stroma</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <div className="w-2.5 h-2.5 rounded-sm bg-[#21918c]" />
+                <span>Moderate</span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <div className="w-2.5 h-2.5 rounded-sm bg-[#fde725]" />
+                <span className="text-amber-300 font-semibold">Hotspot (&gt;75%)</span>
+              </div>
             </div>
           )}
         </div>
@@ -266,11 +355,16 @@ export function TriageViewer({ caseId }: { caseId: string }) {
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Proposed Tumor ROIs</span>
             <button
-              onClick={handleAddUserHotspot}
-              className="px-2 py-1 bg-sky-600/20 hover:bg-sky-600/40 text-sky-400 border border-sky-600/40 rounded text-xs font-semibold flex items-center space-x-1 transition"
+              onClick={() => setIsAddingRoiMode(!isAddingRoiMode)}
+              className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition ${
+                isAddingRoiMode
+                  ? "bg-sky-600 text-white ring-2 ring-sky-400 shadow-md shadow-sky-600/30"
+                  : "bg-sky-600/20 hover:bg-sky-600/40 text-sky-400 border border-sky-600/40"
+              }`}
+              title="Click on the Whole Slide Image to select a custom tumor ROI"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Add ROI</span>
+              <span>{isAddingRoiMode ? "Cancel Pinning" : "+ Pin ROI on Slide"}</span>
             </button>
           </div>
 
@@ -279,74 +373,128 @@ export function TriageViewer({ caseId }: { caseId: string }) {
               No tumor hotspots extracted.
             </div>
           ) : (
-            hotspotsList.map((hs) => (
-              <div
-                key={hs.id}
-                className={`p-3 rounded-lg border transition ${
-                  hs.excluded
-                    ? "bg-slate-950/40 border-slate-800/60 opacity-60"
-                    : "bg-slate-900/90 border-slate-800 hover:border-slate-700"
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center space-x-2">
-                    <span className="font-mono text-xs font-bold text-sky-400">{hs.id}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                      {hs.source}
-                    </span>
+            hotspotsList.map((hs) => {
+              const isSelected = selectedHotspotId === hs.id;
+              return (
+                <div
+                  key={hs.id}
+                  className={`p-3 rounded-lg border transition ${
+                    isSelected
+                      ? "bg-slate-900 border-sky-500 ring-1 ring-sky-500/50 shadow-lg"
+                      : hs.excluded
+                      ? "bg-slate-950/40 border-slate-800/60 opacity-60"
+                      : "bg-slate-900/90 border-slate-800 hover:border-slate-700"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="font-mono text-xs font-bold text-sky-400">{hs.id}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                        {hs.source}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-1.5">
+                      {!hs.excluded && (
+                        <button
+                          onClick={() => {
+                            setSelectedHotspotId(null);
+                            setTimeout(() => setSelectedHotspotId(hs.id), 50);
+                          }}
+                          className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center space-x-1 transition ${
+                            isSelected
+                              ? "bg-sky-600 text-white shadow-md shadow-sky-600/30"
+                              : "bg-slate-800 hover:bg-sky-600/30 text-sky-400 border border-slate-700"
+                          }`}
+                          title="Highlight hotspot location on slide with crosshair reticle"
+                        >
+                          <Crosshair className="w-3 h-3" />
+                          <span>Locate</span>
+                        </button>
+                      )}
+
+                      {hs.excluded ? (
+                        <button
+                          onClick={() => handleRestoreHotspot(hs.id)}
+                          className="text-xs text-emerald-400 hover:underline font-semibold"
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleDeleteHotspot(hs.id)}
+                          className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
+                          title="Delete Hotspot"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  {hs.excluded ? (
-                    <button
-                      onClick={() => handleRestoreHotspot(hs.id)}
-                      className="text-xs text-emerald-400 hover:underline font-semibold"
+                  {/* 10x Microscopic Patch Preview */}
+                  {!hs.excluded && (
+                    <div
+                      className="relative group/thumb cursor-pointer overflow-hidden rounded border border-slate-800 bg-slate-950 h-28 mb-2 flex items-center justify-center shadow-inner"
+                      onClick={() => setPreviewHotspot(hs)}
+                      title="Click to inspect microscopic morphology"
                     >
-                      Restore
-                    </button>
-                  ) : (
-                    <div className="flex items-center space-x-1">
+                      {(() => {
+                        const poly = hs.polygon_um || [];
+                        const cx = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[0], 0) / poly.length) : 0;
+                        const cy = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[1], 0) / poly.length) : 0;
+                        return (
+                          <img
+                            src={`${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${hs.id}/thumbnail?mag=10x&cx=${cx}&cy=${cy}`}
+                            alt={`10x patch ${hs.id}`}
+                            className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
+                          />
+                        );
+                      })()}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end justify-between p-2 opacity-90 group-hover/thumb:opacity-100 transition">
+                        <span className="text-[10px] text-sky-300 font-semibold flex items-center space-x-1">
+                          <ZoomIn className="w-3 h-3" />
+                          <span>10× Patch View</span>
+                        </span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900/90 text-amber-300 border border-amber-500/30">
+                          {((hs.prob_mean || 0.7) * 100).toFixed(0)}% Tumor
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-1 text-[11px] font-mono text-slate-400 mb-2">
+                    <div>Area: <span className="text-slate-200">{hs.area_mm2} mm²</span></div>
+                    <div>Mean: <span className="text-slate-200">{hs.prob_mean}</span></div>
+                    <div>Max: <span className="text-slate-200">{hs.prob_max}</span></div>
+                  </div>
+
+                  {!hs.excluded && (
+                    <div className="flex items-center space-x-2 pt-2 border-t border-slate-800/80">
+                      <input
+                        type="text"
+                        placeholder="Reason for exclusion..."
+                        value={excludeReasonInput[hs.id] || ""}
+                        onChange={(e) => setExcludeReasonInput({ ...excludeReasonInput, [hs.id]: e.target.value })}
+                        className="flex-1 bg-slate-950 border border-slate-800 text-xs px-2 py-1 rounded text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-700"
+                      />
                       <button
-                        onClick={() => handleDeleteHotspot(hs.id)}
-                        className="p-1 hover:bg-slate-800 text-slate-500 hover:text-rose-400 rounded"
-                        title="Delete Hotspot"
+                        onClick={() => handleExcludeHotspot(hs.id)}
+                        className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-semibold transition"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        Exclude
                       </button>
                     </div>
                   )}
+
+                  {hs.excluded && hs.exclude_reason && (
+                    <div className="text-[11px] text-amber-400 italic mt-1">
+                      Excluded: {hs.exclude_reason}
+                    </div>
+                  )}
                 </div>
-
-                <div className="grid grid-cols-3 gap-1 text-[11px] font-mono text-slate-400 mb-2">
-                  <div>Area: <span className="text-slate-200">{hs.area_mm2} mm²</span></div>
-                  <div>Mean: <span className="text-slate-200">{hs.prob_mean}</span></div>
-                  <div>Max: <span className="text-slate-200">{hs.prob_max}</span></div>
-                </div>
-
-                {!hs.excluded && (
-                  <div className="flex items-center space-x-2 pt-2 border-t border-slate-800/80">
-                    <input
-                      type="text"
-                      placeholder="Reason for exclusion..."
-                      value={excludeReasonInput[hs.id] || ""}
-                      onChange={(e) => setExcludeReasonInput({ ...excludeReasonInput, [hs.id]: e.target.value })}
-                      className="flex-1 bg-slate-950 border border-slate-800 text-xs px-2 py-1 rounded text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-700"
-                    />
-                    <button
-                      onClick={() => handleExcludeHotspot(hs.id)}
-                      className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-semibold transition"
-                    >
-                      Exclude
-                    </button>
-                  </div>
-                )}
-
-                {hs.excluded && hs.exclude_reason && (
-                  <div className="text-[11px] text-amber-400 italic mt-1">
-                    Excluded: {hs.exclude_reason}
-                  </div>
-                )}
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
@@ -384,6 +532,130 @@ export function TriageViewer({ caseId }: { caseId: string }) {
           </button>
         </div>
       </div>
+
+      {/* Microscopic Patch Morphology Inspector Modal */}
+      {previewHotspot && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-lg w-full max-h-[92vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/80 shrink-0">
+              <div className="flex items-center space-x-2">
+                <Activity className="w-4 h-4 text-sky-400" />
+                <h3 className="text-sm font-bold text-slate-100">
+                  Microscopic Morphology — <span className="font-mono text-sky-400">{previewHotspot.id}</span>
+                </h3>
+              </div>
+              <button
+                onClick={() => setPreviewHotspot(null)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body with Scroll */}
+            <div className="p-4 flex-1 overflow-y-auto flex flex-col items-center space-y-3">
+              {/* Controls Bar: Magnification + Stain Normalization Toggle */}
+              <div className="flex items-center space-x-2 w-full justify-between max-w-sm">
+                {/* Magnification Selector Tabs */}
+                <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 space-x-1 flex-1 justify-center">
+                  {(["10x", "20x", "40x"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setModalMag(m)}
+                      className={`flex-1 py-1 px-2 rounded text-xs font-semibold font-mono transition ${
+                        modalMag === m
+                          ? "bg-sky-600 text-white shadow-sm"
+                          : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                      }`}
+                    >
+                      {m === "10x" ? "10×" : m === "20x" ? "20×" : "40×"}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Stain Normalization Mode Switcher */}
+                <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 space-x-1">
+                  <button
+                    onClick={() => setStainMode("norm")}
+                    className={`py-1 px-2.5 rounded text-xs font-semibold flex items-center space-x-1 transition ${
+                      stainMode === "norm"
+                        ? "bg-emerald-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                    }`}
+                    title="Macenko Standardized Stain Normalization"
+                  >
+                    <span>Norm H&E</span>
+                  </button>
+                  <button
+                    onClick={() => setStainMode("orig")}
+                    className={`py-1 px-2.5 rounded text-xs font-semibold flex items-center space-x-1 transition ${
+                      stainMode === "orig"
+                        ? "bg-amber-600 text-white shadow-sm"
+                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                    }`}
+                    title="Original Scanner H&E Colors"
+                  >
+                    <span>Orig H&E</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* High-Resolution Microscopic Patch Display */}
+              <div className="relative w-64 h-64 sm:w-72 sm:h-72 rounded-lg overflow-hidden border border-slate-700 bg-slate-950 shadow-2xl shrink-0">
+                {(() => {
+                  const poly = previewHotspot.polygon_um || [];
+                  const cx = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[0], 0) / poly.length) : 0;
+                  const cy = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[1], 0) / poly.length) : 0;
+                  return (
+                    <img
+                      src={`${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${previewHotspot.id}/thumbnail?mag=${modalMag}&stain=${stainMode}&cx=${cx}&cy=${cy}`}
+                      alt={`Microscopic morphology for ${previewHotspot.id} at ${modalMag} (${stainMode})`}
+                      className="w-full h-full object-cover"
+                    />
+                  );
+                })()}
+                <div className="absolute top-2 right-2 px-2 py-0.5 bg-slate-900/90 border border-slate-700 rounded text-[10px] font-mono text-sky-300 font-semibold shadow">
+                  {modalMag.toUpperCase()} • {stainMode === "norm" ? "Norm" : "Orig"}
+                </div>
+              </div>
+
+              {/* Morphologic Metrics */}
+              <div className="w-full grid grid-cols-3 gap-2">
+                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Cluster Area</div>
+                  <div className="text-sm font-bold font-mono text-slate-100 mt-0.5">{previewHotspot.area_mm2} mm²</div>
+                </div>
+                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Mean Tumor Prob</div>
+                  <div className="text-sm font-bold font-mono text-sky-400 mt-0.5">{(previewHotspot.prob_mean * 100).toFixed(0)}%</div>
+                </div>
+                <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-center">
+                  <div className="text-[9px] text-slate-400 font-semibold uppercase">Peak Tumor Prob</div>
+                  <div className="text-sm font-bold font-mono text-amber-400 mt-0.5">{(previewHotspot.prob_max * 100).toFixed(0)}%</div>
+                </div>
+              </div>
+
+              <div className="w-full text-[11px] text-slate-400 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80 flex items-start space-x-2">
+                <Info className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
+                <p>
+                  Screened via Vertex AI Path Foundation model. This ROI will be transferred to <strong>Stage 4 (Mitosis Counting)</strong> for high-power mitotic figure enumeration.
+                </p>
+              </div>
+            </div>
+
+            {/* Pinned Modal Footer */}
+            <div className="p-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-end shrink-0">
+              <button
+                onClick={() => setPreviewHotspot(null)}
+                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition border border-slate-700"
+              >
+                Close Morphology Inspector
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

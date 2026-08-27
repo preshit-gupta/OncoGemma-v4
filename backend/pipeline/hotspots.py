@@ -1,12 +1,8 @@
-"""
-Pure functional logic for extracting hotspot ROIs from probability grids.
-Independent of I/O, DB, or GCS. Fully unit-testable.
-"""
 from typing import Any
 import numpy as np
-from scipy.ndimage import gaussian_filter, label
+from scipy.ndimage import gaussian_filter, label, maximum_filter
 from skimage.measure import find_contours
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, box
 
 
 def extract_hotspots(
@@ -16,138 +12,132 @@ def extract_hotspots(
     cfg: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """
-    Extracts top hotspot ROIs from a 2D probability grid.
+    Extracts standardized candidate High-Power Field (HPF) hotspot sites from a 2D probability grid.
+    Guarantees a minimum of 10 prioritized HPF candidate sites across the invasive tumor front.
 
     Args:
         prob_grid: 2D float32 array [ny, nx] where NaN = no tissue.
         grid_origin_um: (origin_x_um, origin_y_um) in base slide coordinates.
-        stride_um: Stride between grid cells in micrometers (e.g. 224 µm).
-        cfg: Config dict containing sigma, prob_threshold, min_area_mm2, max_hotspots, margin_um, simplify_tolerance_um.
+        stride_um: Stride between grid cells in micrometers (e.g. 102 µm).
+        cfg: Config dict containing sigma, prob_threshold, min_area_mm2, max_hotspots, margin_um.
 
     Returns:
         List of Hotspot dictionaries containing polygon_um, area_mm2, prob_mean, prob_max, source, excluded.
     """
-    sigma = float(cfg.get("sigma", 2.0))
-    prob_threshold = float(cfg.get("prob_threshold", 0.5))
-    min_area_mm2 = float(cfg.get("min_area_mm2", 0.5))
-    max_hotspots = int(cfg.get("max_hotspots", 8))
-    margin_um = float(cfg.get("margin_um", 100.0))
-    simplify_tolerance_um = float(cfg.get("simplify_tolerance_um", 50.0))
+    sigma = float(cfg.get("sigma", 1.0))
+    prob_threshold = float(cfg.get("prob_threshold", 0.50))
+    max_hotspots = int(cfg.get("max_hotspots", 10))
+    half_box_um = float(cfg.get("hpf_half_size_um", 300.0)) # 600 um x 600 um standard HPF site
 
     if prob_grid is None or prob_grid.size == 0:
         return []
 
-    # 1. Handle NaNs during Gaussian smoothing via weight masking
     valid_mask = ~np.isnan(prob_grid)
     if not np.any(valid_mask):
         return []
 
     prob_filled = np.nan_to_num(prob_grid, nan=0.0)
-    
     smoothed_prob = gaussian_filter(prob_filled, sigma=sigma)
     smoothed_weight = gaussian_filter(valid_mask.astype(float), sigma=sigma)
-    
-    # Avoid zero division
+
     with np.errstate(divide='ignore', invalid='ignore'):
         smoothed = np.where(smoothed_weight > 1e-5, smoothed_prob / smoothed_weight, 0.0)
-    
-    # Mask out non-tissue areas
+
     smoothed[~valid_mask] = 0.0
 
-    # 2. Binary thresholding
-    binary = smoothed >= prob_threshold
-    if not np.any(binary):
-        return []
+    # 1. Detect local maxima in probability across tissue
+    footprint = np.ones((5, 5))
+    local_max = (maximum_filter(smoothed, footprint=footprint) == smoothed) & (smoothed >= prob_threshold)
+    max_coords = np.argwhere(local_max)
 
-    # 3. Connected components labeling
-    labeled_grid, num_features = label(binary)
-    if num_features == 0:
-        return []
-
-    cell_area_mm2 = (stride_um * stride_um) / 1e6
-    components = []
-
-    for comp_idx in range(1, num_features + 1):
-        comp_mask = (labeled_grid == comp_idx)
-        cell_count = np.sum(comp_mask)
-        area_mm2 = cell_count * cell_area_mm2
-
-        if area_mm2 < min_area_mm2:
-            continue
-
-        raw_probs = prob_filled[comp_mask]
-        prob_sum = float(np.sum(raw_probs))
-        prob_mean = float(np.mean(raw_probs))
-        prob_max = float(np.max(raw_probs))
-
-        components.append({
-            "comp_idx": comp_idx,
-            "comp_mask": comp_mask,
-            "area_mm2": area_mm2,
-            "prob_sum": prob_sum,
-            "prob_mean": prob_mean,
-            "prob_max": prob_max
-        })
-
-    if not components:
-        return []
-
-    # 4. Score & rank components by prob_sum; retain top N
-    components.sort(key=lambda c: c["prob_sum"], reverse=True)
-    top_components = components[:max_hotspots]
+    # Sort coordinates by smoothed probability descending
+    max_coords = sorted(max_coords, key=lambda c: smoothed[c[0], c[1]], reverse=True)
 
     hotspots = []
     origin_x, origin_y = grid_origin_um
+    min_separation_cells = max(3, int(round(800.0 / stride_um))) # ~800 um minimum separation
 
-    for i, comp in enumerate(top_components, start=1):
-        mask_pad = np.pad(comp["comp_mask"], pad_width=1, mode='constant', constant_values=False)
-        contours = find_contours(mask_pad.astype(float), 0.5)
+    for r, c in max_coords:
+        if len(hotspots) >= max_hotspots:
+            break
 
-        if not contours:
-            continue
+        # Verify spatial separation from previously selected HPF sites
+        too_close = False
+        for s in hotspots:
+            dr = r - s["_r"]
+            dc = c - s["_c"]
+            dist_cells = np.sqrt(dr * dr + dc * dc)
+            if dist_cells < min_separation_cells:
+                too_close = True
+                break
 
-        # Use largest contour if multiple returned
-        contours.sort(key=lambda c: len(c), reverse=True)
-        main_contour = contours[0]
+        if not too_close:
+            cx_um = origin_x + (c * stride_um)
+            cy_um = origin_y + (r * stride_um)
 
-        # Convert contour coordinates (r, c) to base micrometers
-        # Note: pad_width=1 shifts row/col by -1
-        coords_um = []
-        for r, c in main_contour:
-            grid_c = c - 1.0
-            grid_r = r - 1.0
-            x_um = origin_x + (grid_c * stride_um)
-            y_um = origin_y + (grid_r * stride_um)
-            coords_um.append((x_um, y_um))
+            site_box = box(
+                cx_um - half_box_um, 
+                cy_um - half_box_um, 
+                cx_um + half_box_um, 
+                cy_um + half_box_um
+            )
+            final_coords = [[round(x, 2), round(y, 2)] for x, y in site_box.exterior.coords]
+            actual_area_mm2 = round((half_box_um * 2) ** 2 / 1e6, 3)
 
-        if len(coords_um) < 3:
-            continue
+            hotspots.append({
+                "id": f"hs_{len(hotspots) + 1:02d}",
+                "_r": r,
+                "_c": c,
+                "polygon_um": final_coords,
+                "area_mm2": actual_area_mm2,
+                "prob_mean": round(float(smoothed[r, c]), 3),
+                "prob_max": round(float(prob_filled[r, c]), 3),
+                "source": "model",
+                "excluded": False,
+                "exclude_reason": None
+            })
 
-        poly = Polygon(coords_um)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
+    # If local maxima yielded fewer than max_hotspots, fill from top overall tissue points
+    if len(hotspots) < max_hotspots:
+        tissue_coords = np.argwhere(valid_mask)
+        tissue_coords = sorted(tissue_coords, key=lambda c: smoothed[c[0], c[1]], reverse=True)
 
-        # Simplify & dilate by margin_um
-        if simplify_tolerance_um > 0:
-            poly = poly.simplify(simplify_tolerance_um, preserve_topology=True)
-        if margin_um > 0:
-            poly = poly.buffer(margin_um)
+        for r, c in tissue_coords:
+            if len(hotspots) >= max_hotspots:
+                break
+            too_close = False
+            for s in hotspots:
+                dr = r - s["_r"]
+                dc = c - s["_c"]
+                if np.sqrt(dr * dr + dc * dc) < min_separation_cells * 0.7:
+                    too_close = True
+                    break
+            if not too_close:
+                cx_um = origin_x + (c * stride_um)
+                cy_um = origin_y + (r * stride_um)
+                site_box = box(
+                    cx_um - half_box_um, 
+                    cy_um - half_box_um, 
+                    cx_um + half_box_um, 
+                    cy_um + half_box_um
+                )
+                final_coords = [[round(x, 2), round(y, 2)] for x, y in site_box.exterior.coords]
+                hotspots.append({
+                    "id": f"hs_{len(hotspots) + 1:02d}",
+                    "_r": r,
+                    "_c": c,
+                    "polygon_um": final_coords,
+                    "area_mm2": round((half_box_um * 2) ** 2 / 1e6, 3),
+                    "prob_mean": round(float(smoothed[r, c]), 3),
+                    "prob_max": round(float(prob_filled[r, c]), 3),
+                    "source": "model",
+                    "excluded": False,
+                    "exclude_reason": None
+                })
 
-        if poly.is_empty or not hasattr(poly, 'exterior') or poly.exterior is None:
-            continue
-
-        final_coords = [[round(x, 2), round(y, 2)] for x, y in poly.exterior.coords]
-        actual_area_mm2 = round(poly.area / 1e6, 3)
-
-        hotspots.append({
-            "id": f"hs_{i:02d}",
-            "polygon_um": final_coords,
-            "area_mm2": actual_area_mm2,
-            "prob_mean": round(comp["prob_mean"], 3),
-            "prob_max": round(comp["prob_max"], 3),
-            "source": "model",
-            "excluded": False,
-            "exclude_reason": None
-        })
+    # Clean temporary keys
+    for h in hotspots:
+        h.pop("_r", None)
+        h.pop("_c", None)
 
     return hotspots

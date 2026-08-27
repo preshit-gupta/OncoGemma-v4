@@ -3,17 +3,23 @@ FastAPI router for Hotspot Triage (v4.2 Stage 3).
 Handles triage data fetching, RFC-6902 review edit recording, and stage confirmation gate.
 """
 import os
+import io
 import json
 from datetime import datetime, timezone
-from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Any, Optional
+import numpy as np
+from PIL import Image
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.gcs import get_local_cache_dir
 from app.core.db import get_db
 from app.models.case import Case
+from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
@@ -139,6 +145,163 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db)):
         "review_edits": edits,
         "model_versions": stage_exec.model_versions
     }
+
+
+@router.get("/{case_id}/heatmap")
+def get_triage_heatmap_image(case_id: str, db: Session = Depends(get_db)):
+    """Returns the Viridis heatmap PNG overlay for OpenSeadragon viewer."""
+    stage_exec = db.scalars(
+        select(StageExecution).where(
+            StageExecution.case_id == case_id,
+            StageExecution.stage == "triage"
+        ).order_by(StageExecution.attempt.desc())
+    ).first()
+
+    if not stage_exec:
+        raise HTTPException(status_code=404, detail="Triage execution not found")
+
+    cache_base = get_local_cache_dir()
+    heatmap_png_path = os.path.join(cache_base, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "triage", "heatmap_triage.png")
+
+    if not os.path.exists(heatmap_png_path):
+        heatmap_png_path = os.path.join(cache_base, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "triage", "heatmap.png")
+
+    if not os.path.exists(heatmap_png_path):
+        raise HTTPException(status_code=404, detail="Heatmap image artifact not found")
+
+    return FileResponse(heatmap_png_path, media_type="image/png")
+
+
+@router.get("/{case_id}/hotspots/{hotspot_id}/thumbnail")
+def get_hotspot_thumbnail(
+    case_id: str, 
+    hotspot_id: str, 
+    mag: str = "10x",
+    stain: str = "norm",
+    cx: Optional[float] = Query(None),
+    cy: Optional[float] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Extracts and streams a calibrated microscopic RGB patch centered on the specified hotspot or coordinates."""
+    cache_base = get_local_cache_dir()
+    case_obj = db.get(Case, case_id)
+    slide_obj = case_obj.slides[0] if case_obj and case_obj.slides else None
+    if not slide_obj:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    mpp_x = float(slide_obj.mpp_x or 0.25)
+    mpp_y = float(slide_obj.mpp_y or mpp_x)
+
+    cx_um = None
+    cy_um = None
+
+    if cx is not None and cy is not None:
+        cx_um = float(cx)
+        cy_um = float(cy)
+    else:
+        out_json_path = os.path.join(cache_base, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "triage", "output.json")
+        if os.path.exists(out_json_path):
+            with open(out_json_path, "r", encoding="utf-8") as f:
+                tdata = json.load(f)
+            target_hs = next((h for h in tdata.get("hotspots", []) if h["id"] == hotspot_id), None)
+            if target_hs and "polygon_um" in target_hs:
+                poly = np.array(target_hs["polygon_um"])
+                cx_um = float(poly[:, 0].mean())
+                cy_um = float(poly[:, 1].mean())
+
+    if cx_um is None or cy_um is None:
+        # Check review edits in DB
+        st_obj = next((s for s in case_obj.stage_executions if s.stage == "triage"), None)
+        if st_obj and st_obj.review_edits:
+            for ed in st_obj.review_edits:
+                if ed.get("id") == hotspot_id and "polygon_um" in ed:
+                    poly = np.array(ed["polygon_um"])
+                    cx_um = float(poly[:, 0].mean())
+                    cy_um = float(poly[:, 1].mean())
+                    break
+
+    if cx_um is None or cy_um is None:
+        cx_um = float(slide_obj.width_px or 20000) * mpp_x * 0.5
+        cy_um = float(slide_obj.height_px or 20000) * mpp_y * 0.5
+
+    cx_px = int(cx_um / mpp_x)
+    cy_px = int(cy_um / mpp_y)
+
+    # Resolve field size in micrometers based on requested magnification
+    field_um = 512.0
+    if mag == "20x":
+        field_um = 256.0
+    elif mag == "40x":
+        field_um = 128.0
+
+    # 1. Search candidate locations for the raw WSI slide
+    candidate_paths = []
+    # Location A: GCS cache raw cases directory
+    raw_case_dir = os.path.join(cache_base, settings.GCS_RAW_BUCKET, "cases", str(case_id))
+    if os.path.exists(raw_case_dir):
+        for f in os.listdir(raw_case_dir):
+            if f.endswith((".svs", ".ndpi", ".tif", ".tiff")):
+                candidate_paths.append(os.path.join(raw_case_dir, f))
+
+    # Location B: raw_uploads
+    raw_uploads_dir = os.path.abspath("raw_uploads")
+    if os.path.exists(raw_uploads_dir):
+        for f in os.listdir(raw_uploads_dir):
+            if str(case_id) in f and f.endswith((".svs", ".ndpi", ".tif", ".tiff")):
+                candidate_paths.append(os.path.join(raw_uploads_dir, f))
+
+    # Location C: GCS cache direct bucket
+    raw_bucket_dir = os.path.join(cache_base, settings.GCS_RAW_BUCKET)
+    if os.path.exists(raw_bucket_dir):
+        for root, _, files in os.walk(raw_bucket_dir):
+            for f in files:
+                if str(case_id) in root and f.endswith((".svs", ".ndpi", ".tif", ".tiff")):
+                    candidate_paths.append(os.path.join(root, f))
+
+    if candidate_paths:
+        try:
+            import openslide
+            slide_file = candidate_paths[0]
+            os_slide = openslide.OpenSlide(slide_file)
+            crop_w_px = int(round(field_um / mpp_x))
+            crop_h_px = int(round(field_um / mpp_y))
+
+            x0 = max(0, cx_px - crop_w_px // 2)
+            y0 = max(0, cy_px - crop_h_px // 2)
+
+            # Read region at highest resolution level 0
+            patch_raw = os_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
+
+            # Apply Macenko Stain Normalization if requested
+            if stain == "norm":
+                try:
+                    from pipeline.stain import PureNumpyMacenkoNormalizer
+                    stain_json = os.path.join(cache_base, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "preprocess", "stain_params.json")
+                    if os.path.exists(stain_json):
+                        with open(stain_json, "r", encoding="utf-8") as sf:
+                            sp_data = json.load(sf)
+                        if "stain_matrix" in sp_data and "max_concentrations" in sp_data:
+                            norm_obj = PureNumpyMacenkoNormalizer()
+                            norm_obj.stain_matrix_target = np.array(sp_data["stain_matrix"], dtype=float)
+                            norm_obj.max_conc_target = np.array(sp_data["max_concentrations"], dtype=float)
+                            norm_arr = norm_obj.transform(np.array(patch_raw))
+                            patch_raw = Image.fromarray(norm_arr)
+                except Exception as se:
+                    print(f"[Thumbnail Normalization Note] {se}")
+
+            patch_final = patch_raw.resize((512, 512), Image.LANCZOS)
+
+            buf = io.BytesIO()
+            patch_final.save(buf, format="JPEG", quality=92)
+            return Response(content=buf.getvalue(), media_type="image/jpeg")
+        except Exception as e:
+            print(f"[Thumbnail OpenSlide Error] {e}")
+
+    # Fallback placeholder
+    img = Image.new("RGB", (512, 512), color=(240, 235, 245))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return Response(content=buf.getvalue(), media_type="image/jpeg")
 
 
 @router.post("/edits")

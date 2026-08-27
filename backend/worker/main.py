@@ -74,12 +74,18 @@ def poll_and_execute_single_task():
             print(f"[Worker] Successfully completed stage '{stage_exec.stage}' for case {stage_exec.case_id} (Status: {stage_exec.status}).")
 
         except Exception as e:
+            db.rollback()
             err_msg = traceback.format_exc()
             print(f"[Worker ERROR] Stage '{stage_exec.stage}' failed for case {stage_exec.case_id}: {e}")
-            stage_exec.status = "failed"
-            stage_exec.error = err_msg
-            stage_exec.completed_at = datetime.now(timezone.utc)
-            db.commit()
+            try:
+                stage_exec_curr = db.get(StageExecution, stage_exec.id)
+                if stage_exec_curr:
+                    stage_exec_curr.status = "failed"
+                    stage_exec_curr.error = err_msg
+                    stage_exec_curr.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+            except Exception as e2:
+                print(f"[Worker Fail State Error] {e2}")
 
         return True
 

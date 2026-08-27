@@ -5,8 +5,18 @@ import Link from "next/link";
 import { ArrowLeft, RefreshCcw, Info, X, Microscope, AlertTriangle, CheckCircle2, RotateCcw } from "lucide-react";
 import { fetchCaseDetail, CaseDetail, retryStage, approveStage } from "@/lib/api";
 import { formatISTDateTime } from "@/lib/utils";
+import dynamic from "next/dynamic";
 import { StageRail } from "@/components/viewer/StageRail";
-import { OpenSeadragonViewer } from "@/components/viewer/OpenSeadragonViewer";
+
+const OpenSeadragonViewer = dynamic(
+  () => import("@/components/viewer/OpenSeadragonViewer").then((mod) => mod.OpenSeadragonViewer),
+  { ssr: false }
+);
+
+const TriageViewer = dynamic(
+  () => import("@/components/viewer/TriageViewer").then((mod) => mod.TriageViewer),
+  { ssr: false }
+);
 
 export default function CaseWorkspacePage({ params }: { params: { id: string } }) {
   const caseId = params.id;
@@ -34,7 +44,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     return () => clearInterval(interval);
   }, [caseId]);
 
-  // Auto-advance activeStage to latest active or completed pipeline stage (e.g. move to Step 2 preprocess automatically)
+  // Auto-advance activeStage to latest active or completed pipeline stage
   useEffect(() => {
     if (!caseDetail?.stages) return;
     const stages = caseDetail.stages;
@@ -43,11 +53,11 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     const triageStage = stages.find((s) => s.stage === "triage");
     const mitosisStage = stages.find((s) => s.stage === "mitosis");
 
-    if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed")) {
-      setActiveStage((prev) => (prev === "ingest" || prev === "preprocess" ? "mitosis" : prev));
-    } else if (triageStage && (triageStage.status === "running" || triageStage.status === "done" || triageStage.status === "confirmed")) {
+    if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed" || mitosisStage.status === "awaiting_review")) {
+      setActiveStage((prev) => (prev === "ingest" || prev === "preprocess" || prev === "triage" ? "mitosis" : prev));
+    } else if (triageStage && (triageStage.status === "running" || triageStage.status === "done" || triageStage.status === "confirmed" || triageStage.status === "awaiting_review" || triageStage.status === "queued")) {
       setActiveStage((prev) => (prev === "ingest" || prev === "preprocess" ? "triage" : prev));
-    } else if (prepStage && (prepStage.status === "running" || prepStage.status === "done" || prepStage.status === "confirmed" || prepStage.status === "queued")) {
+    } else if (prepStage && (prepStage.status === "running" || prepStage.status === "done" || prepStage.status === "confirmed" || prepStage.status === "awaiting_review" || prepStage.status === "queued")) {
       setActiveStage((prev) => (prev === "ingest" ? "preprocess" : prev));
     }
   }, [caseDetail]);
@@ -134,7 +144,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
 
         <div className="flex items-center space-x-2">
           {/* Pathologist Action Buttons for Step 2 */}
-          {isPreprocessDone && (
+          {isPreprocessDone && activeStage === "preprocess" && (
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
                 onClick={handleReprocessPreprocess}
@@ -188,7 +198,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
           onRefresh={loadData}
         />
 
-        {/* Center Digital Slide Viewer */}
+        {/* Center Digital Slide Viewer / Stage View */}
         <div className="flex-1 relative overflow-hidden bg-slate-950">
           {loading ? (
             <div className="flex items-center justify-center h-full text-slate-400 text-sm">
@@ -227,6 +237,13 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 </button>
               </div>
             </div>
+          ) : activeStage === "triage" ? (
+            <TriageViewer
+              caseId={caseId}
+              mppX={slide?.mpp_x || 0.25}
+              imageWidthPx={slide?.width_px || 2048}
+              imageHeightPx={slide?.height_px || 2048}
+            />
           ) : (
             <OpenSeadragonViewer
               caseId={caseId}
