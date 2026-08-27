@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.gcs import get_gcs_client, get_local_cache_dir
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -87,8 +88,9 @@ def run_qc(stage_execution: StageExecution, session: Session) -> tuple[str, dict
 
         verdict = qc_result["verdict"]
 
-        # Persist qc/output.json artifact locally in fake_gcs
-        artifacts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/qc"))
+        # Persist qc/output.json artifact to GCP storage with local disk cache
+        cache_dir = get_local_cache_dir()
+        artifacts_dir = os.path.join(cache_dir, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "qc")
         os.makedirs(artifacts_dir, exist_ok=True)
 
         output_json_path = os.path.join(artifacts_dir, "qc_output.json")
@@ -96,6 +98,15 @@ def run_qc(stage_execution: StageExecution, session: Session) -> tuple[str, dict
             json.dump(qc_result, f, indent=2)
 
         output_ref = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/qc/output.json"
+        
+        try:
+            client = get_gcs_client()
+            bucket = client.bucket(settings.GCS_ARTIFACTS_BUCKET)
+            blob = bucket.blob(f"cases/{case_id}/qc/output.json")
+            if hasattr(blob, "upload_from_filename"):
+                blob.upload_from_filename(output_json_path, content_type="application/json", timeout=10)
+        except Exception as ge:
+            print(f"[QC Worker Note] Parallel GCP cloud artifact upload note: {ge}")
 
         # Update stage status & case status based on QC verdict
         case_obj = session.get(Case, case_id)

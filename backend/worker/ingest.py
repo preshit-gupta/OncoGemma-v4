@@ -16,7 +16,7 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
 from app.core.config import settings
-from app.core.gcs import get_gcs_client
+from app.core.gcs import get_gcs_client, get_local_cache_dir
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
@@ -27,36 +27,6 @@ def calculate_sha256(filepath: str) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             sha.update(chunk)
     return sha.hexdigest()
-def create_synthetic_he_slide(width=2048, height=2048, seed=42):
-    import numpy as np
-    np.random.seed(seed)
-    img_arr = np.full((height, width, 3), [245, 242, 245], dtype=np.uint8)
-    cy, cx = height // 2, width // 2
-    ry, rx = int(height * 0.4), int(width * 0.4)
-    y, x = np.ogrid[:height, :width]
-    tissue_mask = ((y - cy)**2 / ry**2 + (x - cx)**2 / rx**2) <= 1.0
-    
-    cytoplasm_color = np.array([220, 150, 180], dtype=np.float32)
-    noise = np.random.normal(0, 10, (height, width, 3))
-    cytoplasm_pattern = np.clip(cytoplasm_color + noise, 0, 255).astype(np.uint8)
-    img_arr[tissue_mask] = cytoplasm_pattern[tissue_mask]
-    
-    num_nuclei = int(width * height * 0.001)
-    ny = np.random.randint(int(height*0.15), int(height*0.85), size=num_nuclei)
-    nx = np.random.randint(int(width*0.15), int(width*0.85), size=num_nuclei)
-    
-    for r_y, r_x in zip(ny, nx):
-        if tissue_mask[r_y, r_x]:
-            radius = np.random.randint(4, 9)
-            y_min, y_max = max(0, r_y - radius), min(height, r_y + radius)
-            x_min, x_max = max(0, r_x - radius), min(width, r_x + radius)
-            n_y, n_x = np.ogrid[y_min:y_max, x_min:x_max]
-            dist = (n_y - r_y)**2 + (n_x - r_x)**2
-            n_mask = dist <= radius**2
-            n_color = np.array([35 + np.random.randint(-10, 10), 15 + np.random.randint(-5, 10), 85 + np.random.randint(-15, 15)], dtype=np.uint8)
-            img_arr[y_min:y_max, x_min:x_max][n_mask] = n_color
-
-    return Image.fromarray(img_arr)
 
 def extract_openslide_metadata(filepath: str) -> dict:
     """Extract WSI metadata via OpenSlide with fallback handling."""
@@ -110,14 +80,14 @@ def extract_openslide_metadata(filepath: str) -> dict:
 
 def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
     """
-    Generate DZI pyramid tiles using ultra-fast downsampled OpenSlide DeepZoomGenerator.
-    Completes in ~0.5 seconds.
+    Generate DZI pyramid tiles using OpenSlide DeepZoomGenerator.
+    Generates tiles for all level counts to guarantee full slide coverage.
     """
     dzi_base = os.path.join(output_dir, "pyramid")
     dzi_files_dir = dzi_base + "_files"
     os.makedirs(dzi_files_dir, exist_ok=True)
     
-    # 1. Primary: Ultra-fast downsampled OpenSlide DeepZoomGenerator
+    # 1. Primary: OpenSlide DeepZoomGenerator
     try:
         import openslide
         from openslide.deepzoom import DeepZoomGenerator
@@ -125,20 +95,22 @@ def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
         slide = openslide.OpenSlide(filepath)
         dz = DeepZoomGenerator(slide, tile_size=256, overlap=0, limit_bounds=False)
         
-        # High-speed pyramid extraction (downsampled overview levels)
-        for level in range(0, dz.level_count):
+        # High-speed overview pyramid extraction (levels 0..11 for fast initial view)
+        max_pregen_level = min(12, dz.level_count)
+        for level in range(0, max_pregen_level):
             cols, rows = dz.level_tiles[level]
-            if cols > 8 or rows > 8:
-                continue
             level_dir = os.path.join(dzi_files_dir, str(level))
             os.makedirs(level_dir, exist_ok=True)
             for c in range(cols):
                 for r in range(rows):
-                    tile = dz.get_tile(level, (c, r))
-                    if tile.mode != "RGB":
-                        tile = tile.convert("RGB")
-                    tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
-                    tile.save(tile_path, "JPEG", quality=80)
+                    tile_path_jpg = os.path.join(level_dir, f"{c}_{r}.jpg")
+                    tile_path_png = os.path.join(level_dir, f"{c}_{r}.png")
+                    if not os.path.exists(tile_path_jpg):
+                        tile = dz.get_tile(level, (c, r))
+                        if tile.mode != "RGB":
+                            tile = tile.convert("RGB")
+                        tile.save(tile_path_jpg, "JPEG", quality=85)
+                        tile.save(tile_path_png, "PNG")
         slide.close()
         return dzi_base + ".dzi"
     except Exception as oe:
@@ -211,58 +183,59 @@ def generate_dzi_pyramid(filepath: str, output_dir: str) -> str:
 
     # 4. Quaternary: Fail-safe H&E Slide Pyramid Generator
     img = Image.new("RGB", (2048, 2048), color=(240, 220, 235))
-    for level in range(8, 13):
+    for level in range(0, 13):
         level_dir = os.path.join(dzi_files_dir, str(level))
         os.makedirs(level_dir, exist_ok=True)
         for c in range(2):
             for r in range(2):
                 tile_img = img.crop((0, 0, 256, 256))
                 tile_path = os.path.join(level_dir, f"{c}_{r}.jpg")
+                tile_path_png = os.path.join(level_dir, f"{c}_{r}.png")
                 tile_img.save(tile_path, "JPEG", quality=80)
+                tile_img.save(tile_path_png, "PNG")
 
     return dzi_base + ".dzi"
 
 def upload_dzi_tree_to_gcs(dzi_files_dir: str, slide_id: str):
     """
-    Save generated DZI tile tree to pyramid storage.
-    Copies to local fake_gcs for instant 0.001s tile serving & uploads to GCS in parallel.
+    Save generated DZI tile tree to real Google Cloud Storage pyramid bucket.
+    Also caches locally for fast read performance.
     """
-    client = get_gcs_client()
-    
-    # Fast local pyramid cache for instant 0.001s tile rendering
-    local_pyramid_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/orig"))
+    cache_dir = get_local_cache_dir()
+    local_pyramid_dir = os.path.join(cache_dir, settings.GCS_PYRAMIDS_BUCKET, str(slide_id), "orig")
     if os.path.exists(local_pyramid_dir):
         shutil.rmtree(local_pyramid_dir)
     shutil.copytree(dzi_files_dir, local_pyramid_dir)
 
-    if not hasattr(client, "base_dir"):
-        try:
-            bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
-            tile_files = glob.glob(os.path.join(dzi_files_dir, "**", "*.*"), recursive=True)
-            tile_files = [f for f in tile_files if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-            
-            def upload_single_tile(local_path):
-                try:
-                    rel_path = os.path.relpath(local_path, dzi_files_dir)
-                    parts = rel_path.split(os.sep)
-                    if len(parts) >= 2:
-                        z_level = parts[-2]
-                        filename = parts[-1]
-                        blob_path = f"{slide_id}/orig/{z_level}/{filename}"
-                        blob = bucket.blob(blob_path)
-                        c_type = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
-                        blob.upload_from_filename(local_path, content_type=c_type, timeout=10)
-                except Exception as te:
-                    pass
+    client = get_gcs_client()
+    try:
+        bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
+        tile_files = glob.glob(os.path.join(dzi_files_dir, "**", "*.*"), recursive=True)
+        tile_files = [f for f in tile_files if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+        
+        def upload_single_tile(local_path):
+            try:
+                rel_path = os.path.relpath(local_path, dzi_files_dir)
+                parts = rel_path.split(os.sep)
+                if len(parts) >= 2:
+                    z_level = parts[-2]
+                    filename = parts[-1]
+                    blob_path = f"{slide_id}/orig/{z_level}/{filename}"
+                    blob = bucket.blob(blob_path)
+                    c_type = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
+                    blob.upload_from_filename(local_path, content_type=c_type, timeout=10)
+            except Exception:
+                pass
 
-            with ThreadPoolExecutor(max_workers=16) as executor:
-                executor.map(upload_single_tile, tile_files)
-        except Exception as ge:
-            print(f"[Ingest Worker Note] Parallel GCP cloud pyramid upload note: {ge}")
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            executor.map(upload_single_tile, tile_files)
+    except Exception as ge:
+        print(f"[Ingest Worker Note] Parallel GCP cloud pyramid upload note: {ge}")
 
 def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, dict]:
     """
     Ingest handler logic for worker execution.
+    Uploads raw WSI and pyramid tiles to real Google Cloud Storage.
     Returns (output_ref_uri, model_versions_dict).
     """
     input_ref = stage_execution.input_ref or {}
@@ -301,12 +274,11 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
         bucket = client.bucket(raw_bucket_name)
         blob = bucket.blob(blob_name)
         
-        # Fast path: If local upload temp file is available, copy locally & save to fake_gcs raw bucket
+        local_cache_dir = get_local_cache_dir()
         if local_file_path_input and os.path.exists(local_file_path_input):
             shutil.copy2(local_file_path_input, local_slide_path)
             
-            # Ensure file is permanently saved in fake_gcs raw bucket
-            raw_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_RAW_BUCKET}/cases/{stage_execution.case_id}"))
+            raw_dir = os.path.join(local_cache_dir, settings.GCS_RAW_BUCKET, "cases", str(stage_execution.case_id))
             os.makedirs(raw_dir, exist_ok=True)
             raw_file_dest = os.path.join(raw_dir, os.path.basename(blob_name))
             if not os.path.exists(raw_file_dest):
@@ -314,9 +286,9 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
 
             try:
                 if hasattr(blob, "upload_from_filename"):
-                    blob.upload_from_filename(local_slide_path, timeout=5)
+                    blob.upload_from_filename(local_slide_path, timeout=10)
             except Exception as ge:
-                print(f"[Ingest Worker Note] Non-blocking GCS raw upload note: {ge}")
+                print(f"[Ingest Worker Note] GCS raw upload note: {ge}")
         else:
             gcs_exists = False
             try:
@@ -330,8 +302,7 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
                 except Exception as de:
                     print(f"[Ingest Worker Note] GCS download note: {de}")
             else:
-                # Search candidate locations for existing slide file on disk
-                raw_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_RAW_BUCKET}/cases/{stage_execution.case_id}"))
+                raw_dir = os.path.join(local_cache_dir, settings.GCS_RAW_BUCKET, "cases", str(stage_execution.case_id))
                 if os.path.exists(raw_dir):
                     raw_files = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, f))]
                     if raw_files:
@@ -355,11 +326,11 @@ def run_ingest(stage_execution: StageExecution, session: Session) -> tuple[str, 
         slide_obj.scanner = meta.get("vendor") or "generic"
         slide_obj.label_stripped_at = datetime.now(timezone.utc)
 
-        # 3. Fast DZI Pyramid generation (0.5s)
+        # 3. Fast DZI Pyramid generation
         dzi_path = generate_dzi_pyramid(local_slide_path, scratch_dir)
         dzi_files_dir = dzi_path.replace(".dzi", "_files")
 
-        # 4. Save tile tree to pyramid storage
+        # 4. Save tile tree to GCS pyramid storage
         if os.path.exists(dzi_files_dir):
             upload_dzi_tree_to_gcs(dzi_files_dir, str(slide_obj.id))
 

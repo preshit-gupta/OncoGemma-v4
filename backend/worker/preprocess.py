@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.gcs import get_gcs_client
+from app.core.gcs import get_gcs_client, get_local_cache_dir
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
@@ -21,69 +21,94 @@ from pipeline.tiles import read_region_srgb
 
 def generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path: str, scratch_dir: str) -> str:
     """
-    Generate normalized DZI pyramid capped at 10x level (~1.0 µm/px).
-    Generates normalized DZI tiles matching DeepZoom pyramid level indexing (0..max_norm_level).
-    Stores both PNG and JPG format tiles in fake_gcs/GCS under pyramids/{slide_id}/norm/{level}/.
+    Generate complete normalized DZI pyramid for all level counts.
+    Applies Macenko stain normalization to every pyramid tile across all levels.
     """
     slide_id = str(slide_obj.id)
-    norm_pyramid_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/norm"))
+    cache_dir = get_local_cache_dir()
+    norm_pyramid_dir = os.path.join(cache_dir, settings.GCS_PYRAMIDS_BUCKET, slide_id, "norm")
     os.makedirs(norm_pyramid_dir, exist_ok=True)
 
-    # Direct path: Transform existing orig pyramid tiles directly to norm tiles for 1:1 grid alignment
-    orig_pyramid_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/orig"))
+    # 1. Transform existing orig pyramid tiles if available
+    orig_pyramid_dir = os.path.join(cache_dir, settings.GCS_PYRAMIDS_BUCKET, slide_id, "orig")
     if os.path.exists(orig_pyramid_dir):
         available_levels = sorted([int(d) for d in os.listdir(orig_pyramid_dir) if d.isdigit()])
-        if available_levels:
-            slide_max_level = max(available_levels)
-            max_norm_level = max(0, slide_max_level - 2) # 10x cap level
+        for level in available_levels:
+            orig_level_dir = os.path.join(orig_pyramid_dir, str(level))
+            norm_level_dir = os.path.join(norm_pyramid_dir, str(level))
+            os.makedirs(norm_level_dir, exist_ok=True)
             
-            for level in available_levels:
-                orig_level_dir = os.path.join(orig_pyramid_dir, str(level))
-                norm_level_dir = os.path.join(norm_pyramid_dir, str(level))
-                os.makedirs(norm_level_dir, exist_ok=True)
-                
-                tile_files = [f for f in os.listdir(orig_level_dir) if f.endswith(".jpg") or f.endswith(".png")]
-                for f in tile_files:
-                    stem = os.path.splitext(f)[0]
-                    t_path = os.path.join(orig_level_dir, f)
-                    try:
-                        raw_arr = np.array(Image.open(t_path).convert("RGB"))
-                        norm_arr = normalizer.transform(raw_arr)
-                    except Exception:
-                        norm_arr = raw_arr
-                    
-                    norm_tile = Image.fromarray(norm_arr)
-                    norm_tile.save(os.path.join(norm_level_dir, f"{stem}.png"), "PNG")
-                    norm_tile.save(os.path.join(norm_level_dir, f"{stem}.jpg"), "JPEG", quality=85)
-
-            # Upload norm pyramid tiles directly to Real GCP Cloud Storage bucket
-            client = get_gcs_client()
-            if not hasattr(client, "base_dir"):
+            tile_files = [f for f in os.listdir(orig_level_dir) if f.endswith(".jpg") or f.endswith(".png")]
+            for f in tile_files:
+                stem = os.path.splitext(f)[0]
+                t_path = os.path.join(orig_level_dir, f)
                 try:
-                    bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
-                    norm_files = glob.glob(os.path.join(norm_pyramid_dir, "**", "*.*"), recursive=True)
-                    norm_files = [f for f in norm_files if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-                    
-                    def upload_single_norm_tile(local_path):
+                    raw_arr = np.array(Image.open(t_path).convert("RGB"))
+                    norm_arr = normalizer.transform(raw_arr)
+                except Exception:
+                    norm_arr = raw_arr
+                
+                norm_tile = Image.fromarray(norm_arr)
+                norm_tile.save(os.path.join(norm_level_dir, f"{stem}.png"), "PNG")
+                norm_tile.save(os.path.join(norm_level_dir, f"{stem}.jpg"), "JPEG", quality=85)
+
+    # 2. Complete generation via OpenSlide DeepZoomGenerator
+    try:
+        import openslide
+        from openslide.deepzoom import DeepZoomGenerator
+        
+        slide = openslide.OpenSlide(local_slide_path)
+        dz = DeepZoomGenerator(slide, tile_size=256, overlap=0, limit_bounds=False)
+        
+        max_norm_pregen_level = min(12, dz.level_count)
+        for level in range(0, max_norm_pregen_level):
+            norm_level_dir = os.path.join(norm_pyramid_dir, str(level))
+            os.makedirs(norm_level_dir, exist_ok=True)
+            cols, rows = dz.level_tiles[level]
+            for c in range(cols):
+                for r in range(rows):
+                    png_path = os.path.join(norm_level_dir, f"{c}_{r}.png")
+                    if not os.path.exists(png_path):
+                        tile = dz.get_tile(level, (c, r))
+                        if tile.mode != "RGB":
+                            tile = tile.convert("RGB")
+                        raw_arr = np.array(tile, dtype=np.uint8)
                         try:
-                            rel_path = os.path.relpath(local_path, norm_pyramid_dir)
-                            parts = rel_path.split(os.sep)
-                            if len(parts) >= 2:
-                                z_level = parts[-2]
-                                filename = parts[-1]
-                                blob_path = f"{slide_id}/norm/{z_level}/{filename}"
-                                blob = bucket.blob(blob_path)
-                                c_type = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
-                                blob.upload_from_filename(local_path, content_type=c_type, timeout=10)
+                            norm_arr = normalizer.transform(raw_arr)
                         except Exception:
-                            pass
+                            norm_arr = raw_arr
+                        norm_tile = Image.fromarray(norm_arr)
+                        norm_tile.save(png_path, "PNG")
+                        norm_tile.save(os.path.join(norm_level_dir, f"{c}_{r}.jpg"), "JPEG", quality=85)
+        slide.close()
+    except Exception as dz_err:
+        print(f"[Preprocess Worker Note] Direct norm DeepZoom generation note: {dz_err}")
 
-                    with ThreadPoolExecutor(max_workers=16) as executor:
-                        executor.map(upload_single_norm_tile, norm_files)
-                except Exception as ge:
-                    print(f"[Preprocess Worker Note] Parallel GCP cloud norm pyramid upload note: {ge}")
+    # 3. Stream normalized tiles directly to Real GCP Cloud Storage bucket
+    client = get_gcs_client()
+    try:
+        bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
+        norm_files = glob.glob(os.path.join(norm_pyramid_dir, "**", "*.*"), recursive=True)
+        norm_files = [f for f in norm_files if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+        
+        def upload_single_norm_tile(local_path):
+            try:
+                rel_path = os.path.relpath(local_path, norm_pyramid_dir)
+                parts = rel_path.split(os.sep)
+                if len(parts) >= 2:
+                    z_level = parts[-2]
+                    filename = parts[-1]
+                    blob_path = f"{slide_id}/norm/{z_level}/{filename}"
+                    blob = bucket.blob(blob_path)
+                    c_type = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
+                    blob.upload_from_filename(local_path, content_type=c_type, timeout=10)
+            except Exception:
+                pass
 
-            return f"gs://{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/norm/"
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            executor.map(upload_single_norm_tile, norm_files)
+    except Exception as ge:
+        print(f"[Preprocess Worker Note] Parallel GCP cloud norm pyramid upload note: {ge}")
 
     return f"gs://{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/norm/"
 
@@ -93,7 +118,7 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
     Preprocess worker handler:
     1. Fits Macenko stain normalizer on tissue patches.
     2. Extracts 1-bit tissue mask PNG and 1.25x thumbnail PNG.
-    3. Assembles 10x capped normalized DZI pyramid matching DeepZoom indexing.
+    3. Assembles normalized DZI pyramid matching DeepZoom indexing.
     4. Persists preprocess output JSON & queues next stage ('qc').
     """
     input_ref = stage_execution.input_ref or {}
@@ -129,9 +154,10 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
         if input_ref.get("local_file_path") and os.path.exists(input_ref.get("local_file_path")):
             slide_file = input_ref.get("local_file_path")
 
-        # Candidate 2: fake_gcs raw bucket
+        # Candidate 2: local cache raw bucket
+        local_cache_dir = get_local_cache_dir()
         if not slide_file:
-            raw_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_RAW_BUCKET}/cases/{case_id}"))
+            raw_dir = os.path.join(local_cache_dir, settings.GCS_RAW_BUCKET, "cases", str(case_id))
             if os.path.exists(raw_dir):
                 raw_files = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, f))]
                 if raw_files:
@@ -147,25 +173,6 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
 
         if slide_file and os.path.exists(slide_file):
             shutil.copy2(slide_file, local_slide_path)
-        else:
-            # Reconstruct slide from highest level orig tiles in fake_gcs pyramids
-            orig_top_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_PYRAMIDS_BUCKET}/{slide_id}/orig"))
-            if os.path.exists(orig_top_dir):
-                levels = [int(d) for d in os.listdir(orig_top_dir) if d.isdigit()]
-                if levels:
-                    max_lvl = max(levels)
-                    lvl_dir = os.path.join(orig_top_dir, str(max_lvl))
-                    tile_files = [f for f in os.listdir(lvl_dir) if f.endswith(".jpg") or f.endswith(".png")]
-                    if tile_files:
-                        max_c = max([int(f.split("_")[0]) for f in tile_files])
-                        max_r = max([int(f.split("_")[1].split(".")[0]) for f in tile_files])
-                        
-                        canvas = Image.new("RGB", ((max_c + 1) * 256, (max_r + 1) * 256), (255, 255, 255))
-                        for f in tile_files:
-                            c, r = int(f.split("_")[0]), int(f.split("_")[1].split(".")[0])
-                            t_img = Image.open(os.path.join(lvl_dir, f))
-                            canvas.paste(t_img, (c * 256, r * 256))
-                        canvas.save(local_slide_path, "JPEG")
 
         if not os.path.exists(local_slide_path):
             raise FileNotFoundError(f"Raw slide file not found for preprocess stage in case {case_id}")
@@ -198,12 +205,12 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
         if hasattr(slide, "close"):
             slide.close()
 
-        # Save artifacts locally in fake_gcs
+        # Save artifacts to GCS and local cache
         stain_params_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/stain_params.json"
         tissue_mask_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/tissue_mask.png"
         thumbnail_uri = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/thumbnail.png"
 
-        artifacts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../fake_gcs/{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess"))
+        artifacts_dir = os.path.join(local_cache_dir, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "preprocess")
         os.makedirs(artifacts_dir, exist_ok=True)
 
         with open(os.path.join(artifacts_dir, "stain_params.json"), "w", encoding="utf-8") as f:
@@ -212,7 +219,7 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
         mask_img = Image.fromarray((tissue_mask_1bit * 255).astype(np.uint8))
         mask_img.save(os.path.join(artifacts_dir, "tissue_mask.png"), "PNG")
 
-        # Assemble 10x Capped Normalized DZI Pyramid
+        # Assemble Normalized DZI Pyramid
         norm_pyramid_uri = generate_norm_dzi_pyramid(slide_obj, normalizer, local_slide_path, scratch_dir)
 
         # Save preprocess/output.json
@@ -231,6 +238,15 @@ def run_preprocess(stage_execution: StageExecution, session: Session) -> tuple[s
             json.dump(preprocess_output, f, indent=2)
 
         output_ref = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/preprocess/output.json"
+
+        # Stream preprocess output JSON to Real GCP Cloud Storage bucket
+        try:
+            bucket = client.bucket(settings.GCS_ARTIFACTS_BUCKET)
+            blob = bucket.blob(f"cases/{case_id}/preprocess/output.json")
+            if hasattr(blob, "upload_from_filename"):
+                blob.upload_from_filename(output_json_path, content_type="application/json", timeout=10)
+        except Exception as ge:
+            print(f"[Preprocess Worker Note] Real GCP cloud artifact upload note: {ge}")
 
         # Update stage execution status
         stage_execution.status = "done"

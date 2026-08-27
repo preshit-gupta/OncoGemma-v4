@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.db import get_db
 from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
-from app.core.gcs import get_gcs_client
+from app.core.gcs import get_gcs_client, get_local_cache_dir
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -118,25 +118,18 @@ async def upload_slide_file(
     os.makedirs(temp_dir, exist_ok=True)
     local_temp_path = os.path.join(temp_dir, f"{case_id}_{file_uuid}.{ext}")
 
-    fake_gcs_raw_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../fake_gcs/{settings.GCS_RAW_BUCKET}/cases/{case_id}"))
-    os.makedirs(fake_gcs_raw_dir, exist_ok=True)
-    fake_gcs_raw_path = os.path.join(fake_gcs_raw_dir, f"{file_uuid}.{ext}")
+    local_gcs_raw_dir = os.path.join(get_local_cache_dir(), settings.GCS_RAW_BUCKET, "cases", str(case_id))
+    os.makedirs(local_gcs_raw_dir, exist_ok=True)
+    local_gcs_raw_path = os.path.join(local_gcs_raw_dir, f"{file_uuid}.{ext}")
     
     try:
         await file.seek(0)
         with open(local_temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        # Stream raw slide file directly to Real GCP Cloud Storage bucket (oncogemma-dev-raw)
-        try:
-            client = get_gcs_client()
-            bucket = client.bucket(settings.GCS_RAW_BUCKET)
-            blob = bucket.blob(blob_name)
-            if hasattr(blob, "upload_from_filename"):
-                blob.upload_from_filename(local_temp_path, timeout=30)
-                print(f"[Upload Success] Streamed slide directly to Real GCP bucket gs://{settings.GCS_RAW_BUCKET}/{blob_name}")
-        except Exception as gcs_err:
-            print(f"[Upload Warning] Real GCP Storage upload note: {gcs_err}")
+            
+        # Copy to local GCS cache for immediate availability
+        shutil.copy2(local_temp_path, local_gcs_raw_path)
+        print(f"[Upload Success] Buffered raw slide file to local cache ({os.path.getsize(local_temp_path)} bytes)")
     except Exception as save_err:
         print(f"[Upload Error] Local file save failed: {save_err}")
         raise HTTPException(status_code=500, detail=f"Local file buffer save failed: {str(save_err)}")

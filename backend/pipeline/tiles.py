@@ -30,7 +30,6 @@ def check_icc_profile(slide) -> tuple[bytes | None, bool]:
     
     # 1. OpenSlide properties
     if hasattr(slide, "properties"):
-        # OpenSlide >= 1.3 key openslide.color-profile
         icc_bytes = slide.properties.get("openslide.color-profile")
         if isinstance(icc_bytes, str):
             icc_bytes = icc_bytes.encode("utf-8")
@@ -95,15 +94,17 @@ def read_region_srgb(
 
     # 2. PIL Image object fallback
     elif hasattr(slide, "crop"):
-        crop_box = (x_px_0, y_px_0, x_px_0 + w_px_0, y_px_0 + h_px_0)
-        width, height = slide.size
-        clamped_box = (
-            max(0, min(width, crop_box[0])),
-            max(0, min(height, crop_box[1])),
-            max(0, min(width, crop_box[2])),
-            max(0, min(height, crop_box[3]))
-        )
-        pil_tile = slide.crop(clamped_box)
+        img_w, img_h = slide.size
+        box_x1 = max(0, min(img_w, x_px_0))
+        box_y1 = max(0, min(img_h, y_px_0))
+        box_x2 = max(box_x1, min(img_w, x_px_0 + w_px_0))
+        box_y2 = max(box_y1, min(img_h, y_px_0 + h_px_0))
+
+        if box_x2 > box_x1 and box_y2 > box_y1:
+            pil_tile = slide.crop((box_x1, box_y1, box_x2, box_y2))
+        else:
+            pil_tile = Image.new("RGB", (max(1, target_w_px), max(1, target_h_px)), color=(240, 235, 240))
+
         if pil_tile.mode != "RGB":
             pil_tile = pil_tile.convert("RGB")
 

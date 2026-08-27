@@ -51,6 +51,9 @@ Thumbs.db
 *.mrxs
 *.tif
 *.tiff
+*.pdf
+gcs_cache/
+raw_uploads/
 scratch/
 fake_gcs/
 data/

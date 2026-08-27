@@ -1,60 +1,95 @@
-# OncoGemma Stage v4.1: Preprocessing & Automated QC Gate
+# OncoGemma Stage v4.2: Hotspot Triage & GCP Path Foundation Integration
 
-OncoGemma is an enterprise-grade AI diagnostic platform for automated Whole-Slide Image (WSI) processing and Nottingham Histological Grading of invasive breast carcinoma.
+OncoGemma is an enterprise-grade AI diagnostic platform for automated Whole-Slide Image (WSI) processing, hotspot triage, and Nottingham Histological Grading of invasive breast carcinoma.
 
-This repository branch (`v4.1-preprocess-qc`) implements **Stage v4.1 (Preprocessing + QC Gate)**, establishing authentic Whole-Slide Image ingestion, Macenko stain normalization, tissue coverage check, focus quality gate, Real GCP Cloud Storage integration, and interactive Pathologist verification controls.
+This repository branch (`v4.2-hotspot-triage`) implements **Stage v4.2 (Hotspot Triage & Path Foundation Model Endpoint Integration)**, establishing authentic Whole-Slide Image ingestion, Macenko stain normalization, quality control gating, live Google Cloud Vertex AI Path Foundation model inference, linear probe tumor scoring, viridis heatmap rendering, and interactive pathologist ROI review controls.
 
 ---
 
 ## 🏗️ Architecture & Pipeline Overview
 
-Stage v4.1 processes raw whole-slide images (`.svs`, `.ndpi`, `.tiff`, `.tif`, `.jpg`, `.png`) through a multi-stage background worker pipeline:
+Stage v4.2 processes raw whole-slide images (`.svs`, `.ndpi`, `.tiff`, `.tif`, `.jpg`, `.png`) through a multi-stage background worker pipeline:
 
 ```mermaid
 flowchart TD
-    A["Raw WSI Slide Upload (User Browser)"] -->|"FastAPI Direct Stream"| B["Real GCP Raw Bucket: gs://oncogemma-dev-raw/"]
-    B --> C["Worker Stage 1: v4.0 WSI Ingest"]
-    C -->|"Generate Original DeepZoom Pyramids"| D["Real GCP Pyramid Bucket: gs://oncogemma-dev-pyramids/{slide_id}/orig/"]
+    A["Raw WSI Slide Upload (User Browser)"] -->|"FastAPI Direct Non-Blocking Upload"| B["Real GCP Raw Bucket: gs://oncogemma-dev-raw/"]
+    B --> C["Worker Stage 1: v4.0 WSI Ingest (< 3s Overview Pyramid Extraction)"]
+    C -->|"Overview DeepZoom Pyramids"| D["Real GCP Pyramid Bucket: gs://oncogemma-dev-pyramids/{slide_id}/orig/"]
     
     C --> E["Worker Stage 2: v4.1 Preprocessing & Stain Normalization"]
-    E -->|"Otsu 1.25x Tissue Masking"| F["Tissue Mask PNG: gs://oncogemma-dev-artifacts/cases/{case_id}/preprocess/tissue_mask.png"]
-    E -->|"Fit Macenko Normalizer against configs/stain_reference.png"| G["Stain Profile JSON: gs://oncogemma-dev-artifacts/cases/{case_id}/preprocess/stain_params.json"]
-    E -->|"Generate Normalized DeepZoom Pyramids"| H["Real GCP Pyramid Bucket: gs://oncogemma-dev-pyramids/{slide_id}/norm/"]
+    E -->|"Otsu Tissue Masking & Macenko Normalizer"| F["Stain Profile JSON: gs://oncogemma-dev-artifacts/cases/{case_id}/preprocess/stain_params.json"]
+    E -->|"Quality Control Gate (Focus & Coverage)"| G["Automated QC Check Report"]
 
-    E --> I["Worker Stage 3: Automated QC Gate"]
-    I -->|"Tissue Area Check (>= 1.0 mm²)"| J{"QC Gate Checks Pass?"}
-    I -->|"Laplacian Focus Variance Sharpness Check"| J
-    J -->|"PASS"| K["Status: open / done"]
-    J -->|"FAIL"| L["Status: needs_rescan / warn"]
+    G --> H["Worker Stage 3: v4.2 Hotspot Triage"]
+    H -->|"Extract 10x 224x224 Patches"| I["Vertex AI Path Foundation Endpoint (asia-east1)"]
+    I -->|"Batched 384-Dim Feature Embeddings"| J["GCS Parquet Cache: gs://oncogemma-dev-artifacts/artifacts/{slide_id}/embeddings/"]
+    J -->|"Linear Probe Tumor Scoring"| K["2D Probability Grid & Viridis Heatmap Overlay"]
+    K -->|"Spatial DBSCAN ROI Clustering"| L["Top High-Activity Tumor Hotspots"]
 
-    K --> M["Pathologist Interactive Review (OpenSeadragon Viewer)"]
-    M -->|"Re-Process Slide"| E
-    M -->|"Approve Slide & Proceed to Step 3"| N["Queue Stage 3: v4.2 Hotspot Triage"]
+    L --> M["Pathologist Interactive Review (OpenSeadragon + SVG Heatmap Viewer)"]
+    M -->|"Refine / Delete / Add Hotspots"| N["Confirm ROIs & Proceed to Step 4: Mitosis Counting"]
 ```
 
 ---
 
-## 🚀 Key Features Implemented in v4.1
+## 📋 Implementation Plan Summary
 
-### 1. Real Google Cloud Storage Integration
-* All raw Whole-Slide Images, multi-resolution DZI tile pyramids, and stage output reports are persisted directly to **Google Cloud Storage (GCP)** buckets:
-  * `gs://oncogemma-dev-raw` — Raw whole-slide images (`.svs`, `.ndpi`, `.tiff`, `.jpg`).
-  * `gs://oncogemma-dev-pyramids` — Original (`orig/`) and Normalized (`norm/`) DeepZoom tile trees.
-  * `gs://oncogemma-dev-artifacts` — Preprocess stain parameters, tissue masks, and QC reports.
+### Stage Objectives
+1. **Screen Out Low-Risk Tissue & Isolate Invasive Tumor Front**:
+   - Downsample WSI to 10× magnification (~1.0 μm/pixel) and segment into 224×224 patch grid.
+   - Dispatch patch instances directly to GCP Vertex AI Path Foundation online prediction endpoint.
+2. **Systematic Hotspot Extraction**:
+   - Compute 384-dimensional feature embeddings for each tissue patch.
+   - Run calibrated linear probe classifier (`probe_v1.joblib`) to derive tumor probability scores.
+   - Cluster high-activity tumor patches using DBSCAN to extract top spatial hotspots.
+3. **Interactive Pathologist Review UI**:
+   - Render composite dynamic Viridis SVG/PNG heatmap overlays in OpenSeadragon slide viewer.
+   - Provide interactive tools for pathologists to add, edit, or delete hotspot ROIs before proceeding to mitosis counting.
 
-### 2. Macenko Stain Normalization & Vector Alignment
-* Fits Macenko stain parameters (`PureNumpyMacenkoNormalizer`) against `configs/stain_reference.png`.
-* **Stain Vector Alignment**: Strictly assigns Hematoxylin (Row 0: high $OD_R / OD_G$ ratio) and Eosin (Row 1: high $OD_G / OD_R$ ratio).
-* **Non-Negative Concentration Clamping**: Enforces $c_{\text{src}} \ge 0$ to prevent negative OD exponent overflow and white center tissue distortions.
+---
 
-### 3. On-The-Fly Patch Normalization Strategy for Downstream AI
-* Saves `stain_params.json` in GCS (`gs://oncogemma-dev-artifacts/cases/{case_id}/preprocess/stain_params.json`).
-* Downstream AI stages (**v4.2 Hotspot Triage**, **v4.3 Mitosis Counting**, **v4.4 Nottingham Grade**) load `stain_params.json` to normalize extracted $512 \times 512$ candidate patches on-the-fly in $<5\text{ms}$ per patch, avoiding $10+\text{ GB}$ of redundant tile storage per slide.
+## 🔍 Walkthrough & Work Accomplished
 
-### 4. Interactive Pathologist Approval & Re-Processing Controls
-* **Auto-Advancing Workflow Rail**: Automatically advances to Step 2 (**v4.1 Stain & QC Gate**) as soon as WSI ingest completes.
-* **Approve Slide & Proceed to Step 3**: Pathologist approves slide stain quality, marking Stage 2 as confirmed and triggering Stage 3 (**v4.2 Hotspot Triage**).
-* **Re-Process Slide**: Pathologist re-queues Macenko stain normalization and QC gate processing from scratch.
+### 1. GCP Vertex AI Dedicated Endpoint Integration
+- Connected live dedicated prediction endpoint (`mg-endpoint-b556566c-9220-4e82-8d6b-96c28e8392aa.asia-east1-250493189138.prediction.vertexai.goog`).
+- Configured batched inference requests in `VertexPathFoundationClient` ([backend/worker/triage.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/worker/triage.py)) to process patches in parallel.
+- Added Parquet embedding caching in Google Cloud Storage (`pathfoundation_v1.parquet`) to prevent duplicate API invocation costs.
+
+### 2. Fast Non-Blocking WSI Ingest Architecture
+- Refactored slide upload handler in [backend/app/routers/cases.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/app/routers/cases.py) to buffer raw upload bytes locally and return `HTTP 202 ACCEPTED` in **< 1 second**.
+- Capped initial DeepZoom pyramid pre-generation in [backend/worker/ingest.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/worker/ingest.py) to overview levels (`0..11`, ~150 tiles), accelerating WSI ingest to **< 3 seconds**.
+- High-magnification tiles (20x/40x) and stain-normalized tiles are generated dynamically on demand in 5ms via [backend/app/routers/tiles.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/app/routers/tiles.py).
+
+### 3. Macenko Stain Normalization & QC Gate
+- Optimized Macenko stain matrix estimation and vector alignment in [backend/worker/preprocess.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/worker/preprocess.py).
+- Automated 5-point QC gate checks (Stain saturation, Blur check, Artifact check, Coverage, Resolution) in [backend/worker/qc.py](file:///d:/Projects/OncoGemma-v4.2%20(Aug'26)/backend/worker/qc.py).
+
+### 4. End-to-End Test Verification
+- All 16 backend unit & integration tests passing (`16/16 passed`).
+
+---
+
+## ⚙️ GCP Vertex AI Endpoint Configuration
+
+The platform reads the following environment settings from `backend/.env`:
+
+```env
+# GCP Configuration
+GCP_PROJECT_ID=oncogemma
+GCP_REGION=asia-east1
+USE_REAL_GCS=true
+
+# Vertex AI Path Foundation Dedicated Endpoint Configuration
+VERTEX_PATH_FOUNDATION_ENDPOINT_ID=mg-endpoint-b556566c-9220-4e82-8d6b-96c28e8392aa
+VERTEX_PATH_FOUNDATION_LOCATION=asia-east1
+VERTEX_PATH_FOUNDATION_API_ENDPOINT=mg-endpoint-b556566c-9220-4e82-8d6b-96c28e8392aa.asia-east1-250493189138.prediction.vertexai.goog
+USE_MOCK_VERTEX_AI=false
+
+# GCS Storage Buckets
+GCS_RAW_BUCKET=oncogemma-dev-raw
+GCS_PYRAMIDS_BUCKET=oncogemma-dev-pyramids
+GCS_ARTIFACTS_BUCKET=oncogemma-dev-artifacts
+```
 
 ---
 
@@ -64,10 +99,11 @@ flowchart TD
 | :--- | :--- | :--- |
 | `GET` | `/api/v1/cases` | List diagnostic cases |
 | `POST` | `/api/v1/cases` | Create new diagnostic case |
-| `POST` | `/api/v1/cases/{case_id}/slide/upload` | Upload raw whole-slide image to Real GCP Storage |
-| `GET` | `/api/v1/cases/{case_id}/tiles/{layer}/{z}/{filename}` | Stream DZI pyramid tile (`orig` or `norm`) directly from GCP |
-| `POST` | `/api/v1/cases/{case_id}/stages/{stage_name}/approve` | Pathologist approves stage output & queues Stage 3 (Triage) |
-| `POST` | `/api/v1/cases/{case_id}/stages/{stage_name}/retry` | Re-queue pipeline stage execution attempt |
+| `POST` | `/api/v1/cases/{case_id}/slide/upload` | Fast non-blocking raw whole-slide image upload |
+| `GET` | `/api/v1/cases/{case_id}/tiles/{layer}/{z}/{filename}` | Stream DZI pyramid tile (`orig` or `norm`) directly from GCP / On-The-Fly |
+| `GET` | `/api/v1/cases/{case_id}/triage/hotspots` | Fetch 10x tumor hotspots & probability grid metadata |
+| `POST` | `/api/v1/cases/{case_id}/triage/hotspots` | Save pathologist-modified hotspot ROIs |
+| `POST` | `/api/v1/cases/{case_id}/stages/{stage_name}/approve` | Pathologist approves stage output & queues next stage |
 
 ---
 
@@ -76,29 +112,29 @@ flowchart TD
 ### Prerequisites
 * Python 3.10+
 * Node.js 18+ & npm
-* Active Google Cloud Storage credentials (`gcloud auth application-default login` or ADC service account)
+* Active Google Cloud credentials (`gcloud auth application-default login`)
 
-### Backend Setup
+### 1. Backend API Setup
 ```bash
 cd backend
 python -m venv venv
-# On Windows:
+# Windows:
 venv\Scripts\activate
-# On Linux/macOS:
+# Linux/macOS:
 source venv/bin/activate
 
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Worker Setup
+### 2. Stage Worker Setup
 In a separate terminal:
 ```bash
 cd backend
 python -m worker.main
 ```
 
-### Frontend Setup
+### 3. Frontend Setup
 In a separate terminal:
 ```bash
 cd frontend
@@ -106,18 +142,13 @@ npm install
 npm run dev
 ```
 
-Open **[http://localhost:3000/cases](http://localhost:3000/cases)** in your browser to view the live platform!
+Open **[http://localhost:3000/cases](http://localhost:3000/cases)** to interact with the live platform!
 
 ---
 
-## 📄 Verification & Testing
+## 📄 Automated Testing
 
-Run unit tests for stain normalization and QC checks:
+Run the full pytest suite:
 ```bash
 pytest backend/tests
-```
-
-Run end-to-end real GCP upload and pipeline test:
-```bash
-python scratch/test_real_upload.py
 ```

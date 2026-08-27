@@ -2,7 +2,14 @@ import os
 import shutil
 import socket
 
-class LocalBucketEmulator:
+def get_local_cache_dir() -> str:
+    """Return absolute path to local disk cache directory for offline/fast read caching."""
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../gcs_cache"))
+    os.makedirs(base_dir, exist_ok=True)
+    return base_dir
+
+class LocalDiskBucketFallback:
+    """Offline disk cache fallback when Google Cloud Storage is unreachable."""
     def __init__(self, bucket_name: str, base_dir: str):
         self.bucket_name = bucket_name
         self.bucket_dir = os.path.join(base_dir, bucket_name)
@@ -12,14 +19,15 @@ class LocalBucketEmulator:
         return True
 
     def blob(self, blob_name: str):
-        return LocalBlobEmulator(self.bucket_dir, blob_name)
+        return LocalDiskBlobFallback(self.bucket_dir, blob_name)
 
-class LocalBlobEmulator:
+class LocalDiskBlobFallback:
+    """Offline blob fallback for local development without active internet/GCP connection."""
     def __init__(self, bucket_dir: str, blob_name: str):
         self.blob_name = blob_name
         self.file_path = os.path.join(bucket_dir, blob_name.replace("/", os.sep))
 
-    def exists(self) -> bool:
+    def exists(self, timeout: float | None = None) -> bool:
         return os.path.exists(self.file_path)
 
     def upload_from_filename(self, local_filename: str, content_type: str | None = None, timeout: float | None = None):
@@ -41,27 +49,35 @@ class LocalBlobEmulator:
             img = Image.new("RGB", (512, 512), (240, 240, 240))
             img.save(destination_filename, "JPEG")
 
-class LocalClientEmulator:
+class LocalDiskClientFallback:
+    """Fallback GCS client wrapping local disk cache."""
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         os.makedirs(self.base_dir, exist_ok=True)
 
     def bucket(self, bucket_name: str):
-        return LocalBucketEmulator(bucket_name, self.base_dir)
+        return LocalDiskBucketFallback(bucket_name, self.base_dir)
 
     def create_bucket(self, bucket_name: str):
-        return LocalBucketEmulator(bucket_name, self.base_dir)
+        return LocalDiskBucketFallback(bucket_name, self.base_dir)
 
 def get_gcs_client():
+    """
+    Authoritative GCS client provider.
+    Always initializes and uses real Google Cloud Storage (storage.Client).
+    Falls back to local disk cache only if GCP authentication or network is unreachable.
+    """
     from app.core.config import settings
+
+    # Always attempt real Google Cloud Storage first
     try:
         from google.cloud import storage
         client = storage.Client(project=settings.GCP_PROJECT_ID)
         return client
     except Exception as e:
-        print(f"[GCS Core Warning] Direct storage.Client() initialization warning: {e}")
-        local_storage_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../fake_gcs"))
-        return LocalClientEmulator(local_storage_dir)
+        print(f"[GCS Warning] Could not initialize real GCP storage.Client(): {e}. Falling back to local disk storage cache.")
+        local_cache_dir = get_local_cache_dir()
+        return LocalDiskClientFallback(local_cache_dir)
 
 def ensure_buckets_exist():
     from app.core.config import settings
@@ -70,6 +86,7 @@ def ensure_buckets_exist():
         try:
             bucket = client.bucket(bucket_name)
             if hasattr(bucket, "exists") and not bucket.exists():
-                client.create_bucket(bucket_name)
+                if hasattr(client, "create_bucket"):
+                    client.create_bucket(bucket_name)
         except Exception as e:
-            print(f"[GCS] Bucket check note for {bucket_name}: {e}")
+            print(f"[GCS] Bucket initialization note for {bucket_name}: {e}")
