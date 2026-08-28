@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { CheckCircle2, Clock, AlertTriangle, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw } from "lucide-react";
+import { CheckCircle2, Clock, AlertTriangle, XCircle, Play, PanelLeftClose, PanelLeft, RotateCcw, UserCheck } from "lucide-react";
 import { retryStage } from "@/lib/api";
 
 export interface StageInfo {
@@ -54,6 +54,25 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
     }
   };
 
+  const formatStatusLabel = (status: string) => {
+    switch (status) {
+      case "awaiting_review":
+        return "Ready for Review";
+      case "confirmed":
+        return "Confirmed";
+      case "done":
+        return "Completed";
+      case "running":
+        return "Processing...";
+      case "queued":
+        return "In Queue";
+      case "failed":
+        return "Failed";
+      default:
+        return status;
+    }
+  };
+
   const renderStatusBadge = (stageInfo?: StageInfo) => {
     const status = stageInfo?.status || "pending";
     switch (status) {
@@ -63,7 +82,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
       case "running":
         return <Play className="w-4 h-4 text-blue-500 animate-pulse shrink-0" />;
       case "awaiting_review":
-        return <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />;
+        return <UserCheck className="w-4 h-4 text-sky-500 shrink-0" />;
       case "queued":
         return <Clock className="w-4 h-4 text-sky-500 shrink-0" />;
       case "failed":
@@ -131,7 +150,7 @@ export function StageRail({ caseId, stages, activeStage, onSelectStage, onRefres
                     <div className="truncate">
                       <div className="text-xs font-semibold truncate">{st.label}</div>
                       <div className="text-[10px] text-slate-400 capitalize truncate">
-                        {status} {stageInfo?.attempt && stageInfo.attempt > 1 ? `(Attempt ${stageInfo.attempt})` : ""}
+                        {formatStatusLabel(status)} {stageInfo?.attempt && stageInfo.attempt > 1 ? `(Attempt ${stageInfo.attempt})` : ""}
                       </div>
                     </div>
                   )}
