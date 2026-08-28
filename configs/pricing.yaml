@@ -1,0 +1,3 @@
+# Pricing configuration for Vertex AI and cloud services (USD)
+path_foundation:
+  unit_price_per_1k_patches: 0.005 # $0.005 per 1,000 patches

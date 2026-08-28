@@ -1,0 +1,22 @@
+# v4.2 Hotspot Triage Configuration
+mpp_target: 1.0 # 10x magnification (~1.0 µm/px)
+patch_size_px: 224 # 224x224 patch grid
+tissue_threshold_pct: 0.25 # Keep patch if >= 25% tissue mask coverage
+
+vertex_ai:
+  batch_size: 64 # Batched embedding request size
+  concurrency: 8 # Max concurrent HTTP requests
+  max_retries: 5 # Exponential backoff retry count
+
+probe:
+  model_name: "probe_v1"
+  model_path: "models/probe/probe_v1.joblib"
+  version: "probe_v1@sha256"
+
+hotspot_extraction:
+  sigma: 1.0 # Gaussian filter smoothing (~100 µm radius)
+  prob_threshold: 0.45 # Probability threshold for binarization
+  min_area_mm2: 0.20 # Standard HPF area
+  max_hotspots: 10 # Top 10 standardized HPF sites
+  margin_um: 40.0 # Dilation margin in micrometers
+  simplify_tolerance_um: 20.0 # Polygon boundary simplification tolerance

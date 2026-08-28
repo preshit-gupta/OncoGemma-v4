@@ -1,0 +1,415 @@
+export const API_BASE = typeof window !== "undefined"
+  ? (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000")
+  : "http://localhost:8000";
+
+export interface Case {
+  id: string;
+  created_by: string;
+  status: string;
+  created_at: string;
+}
+
+export interface CaseDetail extends Case {
+  slides: Array<{
+    id: string;
+    gcs_uri_original: string;
+    gcs_uri_pyramid?: string;
+    format?: string;
+    scanner?: string;
+    mpp_x?: number;
+    mpp_y?: number;
+    base_mag?: number;
+    width_px?: number;
+    height_px?: number;
+    checksum_sha256?: string;
+    label_stripped_at?: string;
+  }>;
+  stages: Array<{
+    id: string;
+    stage: string;
+    attempt: number;
+    status: string;
+    output_ref?: string;
+    error?: string;
+    started_at?: string;
+    completed_at?: string;
+  }>;
+  tile_url_template?: string | null;
+}
+
+export async function fetchCases(): Promise<Case[]> {
+  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to fetch cases");
+  return res.json();
+}
+
+export async function createCase(): Promise<Case> {
+  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+    method: "POST",
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to create case");
+  return res.json();
+}
+
+export async function uploadSlideFile(
+  caseId: string,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const formData = new FormData();
+    formData.append("file", file);
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          onProgress(percent);
+        }
+      });
+    }
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (_) {
+          resolve({});
+        }
+      } else {
+        let errorMsg = `HTTP Upload Error (${xhr.status})`;
+        try {
+          const body = JSON.parse(xhr.responseText);
+          if (body.detail) errorMsg = body.detail;
+        } catch (_) {}
+        reject(new Error(errorMsg));
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network connection error during file upload")));
+    xhr.addEventListener("abort", () => reject(new Error("Slide upload aborted")));
+
+    xhr.open("POST", `${API_BASE}/api/v1/cases/${caseId}/slide/upload`);
+    xhr.setRequestHeader("X-User-Role", "pathologist");
+    xhr.send(formData);
+  });
+}
+
+export async function retryStage(caseId: string, stageName: string) {
+  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/retry`, {
+    method: "POST",
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to retry stage execution");
+  return res.json();
+}
+
+export async function approveStage(caseId: string, stageName: string) {
+  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/stages/${stageName}/approve`, {
+    method: "POST",
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to approve stage");
+  return res.json();
+}
+
+export async function deleteCase(caseId: string) {
+  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
+    method: "DELETE",
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to delete case");
+}
+
+export async function clearAllCases() {
+  const res = await fetch(`${API_BASE}/api/v1/cases`, {
+    method: "DELETE",
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to clear cases");
+  return res.json();
+}
+
+export async function fetchCaseDetail(caseId: string): Promise<CaseDetail> {
+  const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}`, {
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error("Failed to fetch case detail");
+  return res.json();
+}
+
+// Stage 4: Mitosis Detection & Virtual HPFs Interfaces
+export interface MitosisCandidate {
+  id: string;
+  hotspot_id?: string | null;
+  centroid_um: [number, number];
+  det_conf?: number | null;
+  ver_conf?: number | null;
+  label: "mitosis" | "not_mitosis" | "unreviewed";
+  label_source: "model" | "pathologist" | "pathologist_bulk";
+  crop_uri?: string | null;
+  crop_orig_uri?: string | null;
+}
+
+export interface VirtualHpfSite {
+  seq: number;
+  center_um: [number, number];
+  radius_um: number;
+  count: number;
+  source?: string;
+}
+
+export interface MitoticScoreSummary {
+  count_total: number;
+  n_hpf: number;
+  area_mm2: number;
+  per_mm2: number;
+  classic_per_10hpf: number;
+  mitotic_score: number; // 1, 2, or 3
+}
+
+export interface MitosisStageData {
+  case_id: string;
+  stage_execution_id: string;
+  status: string;
+  candidates: MitosisCandidate[];
+  hpfs: VirtualHpfSite[];
+  summary: MitoticScoreSummary;
+  slide?: { width_px: number; height_px: number; mpp_x: number; mpp_y: number };
+  model_versions: Record<string, string>;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+}
+
+export async function fetchMitosisStageData(caseId: string): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`, {
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error(`Failed to fetch mitosis stage data (Status: ${res.status})`);
+  return res.json();
+}
+
+export async function recomputeMitosis(payload: {
+  case_id: string;
+  candidate_labels?: Record<string, string>;
+  hpfs?: Array<{ seq: number; center_um: [number, number]; radius_um?: number; source?: string }>;
+  audit_toggle?: { id: string; from: string; to: string };
+}): Promise<{ case_id: string; hpfs: VirtualHpfSite[]; summary: MitoticScoreSummary }> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error("Failed to recompute mitosis score");
+  return res.json();
+}
+
+export async function addPathologistMitosis(
+  caseId: string,
+  centroidUm: [number, number],
+  label: string = "mitosis",
+  reviewedBy: string = "pathologist_01"
+): Promise<{ status: string; candidate: MitosisCandidate }> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      centroid_um: centroidUm,
+      label,
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) throw new Error("Failed to add candidate mitosis");
+  return res.json();
+}
+
+export async function bulkRejectUnreviewedMitosis(
+  caseId: string,
+  reviewedBy: string = "pathologist_01"
+): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      action: "reject_remaining_unreviewed",
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) throw new Error("Failed to bulk reject unreviewed candidates");
+  return res.json();
+}
+
+export async function replaceMitosisHpfs(caseId: string): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      action: "re_place_hpfs"
+    })
+  });
+  if (!res.ok) throw new Error("Failed to re-place HPF sites");
+  return res.json();
+}
+
+export async function confirmMitosisStage(
+  caseId: string,
+  reviewedBy: string = "pathologist_01"
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to confirm mitosis stage");
+  }
+  return res.json();
+}
+
+// Stage 5: Nottingham Grading & Architectural Synthesis Interfaces
+export interface GradingPatch {
+  id: string;
+  index: number;
+  center_x_px: number;
+  center_y_px: number;
+  tumor_probability: number;
+  image_url: string;
+  tubule: {
+    tubule_percent: number;
+    tumor_present: boolean;
+    confidence: "low" | "medium" | "high";
+  };
+  pleo: {
+    pleomorphism_score: 1 | 2 | 3;
+    rationale: string;
+    confidence: "low" | "medium" | "high";
+  };
+}
+
+export interface GradingSubscores {
+  tubule_percent?: number;
+  tubule_score: number;
+  pleo_score: number;
+  mitotic_score: number;
+  nottingham_sum: number;
+  grade: number;
+  flags?: string[];
+  is_overridden?: boolean;
+}
+
+export interface HistologicTypeMeta {
+  proposed_type: string;
+  differential: string[];
+  rationale: string;
+  confidence: "low" | "medium" | "high";
+  confirmed_type: string;
+  type_confirmed_by: string;
+  is_confirmed: boolean;
+}
+
+export interface GradingStageData {
+  case_id: string;
+  slide_id?: string | null;
+  status: string;
+  patches: GradingPatch[];
+  machine: GradingSubscores;
+  current: GradingSubscores;
+  histologic_type: HistologicTypeMeta;
+  narrative: string;
+  overrides: Record<string, any>;
+  mitotic_summary: {
+    total_mitoses: number;
+    mitotic_score: number;
+    evaluated_hpfs: number;
+  };
+  model_versions: Record<string, any>;
+}
+
+export async function fetchGradingStageData(caseId: string): Promise<GradingStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/grading/${caseId}`, {
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error(`Failed to fetch grading stage data (Status: ${res.status})`);
+  return res.json();
+}
+
+export async function recomputeGradingPreview(payload: {
+  case_id: string;
+  tubule_score?: number;
+  tubule_percent?: number;
+  pleo_score?: number;
+  mitotic_score?: number;
+}): Promise<{
+  tubule_score: number;
+  pleo_score: number;
+  mitotic_score: number;
+  nottingham_sum: number;
+  grade: number;
+  is_overridden: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/grading/recompute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error("Failed to recompute grade preview");
+  return res.json();
+}
+
+export async function confirmGradingStage(payload: {
+  case_id: string;
+  reviewed_by?: string;
+  histologic_type: string;
+  type_confirmed: boolean;
+  overrides: Record<string, any>;
+  tubule_score: number;
+  tubule_percent?: number;
+  pleo_score: number;
+  mitotic_score: number;
+  nottingham_sum: number;
+  grade: number;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/grading/confirm`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to confirm grading stage");
+  }
+  return res.json();
+}
+

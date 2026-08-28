@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oncogemma_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: oncogemma
+      POSTGRES_PASSWORD: oncogemma_dev_password
+      POSTGRES_DB: oncogemma_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oncogemma -d oncogemma_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  fake-gcs-server:
+    image: fsouza/fake-gcs-server:latest
+    container_name: oncogemma_fake_gcs
+    restart: unless-stopped
+    command: -scheme http -port 4443
+    ports:
+      - "4443:4443"
+    volumes:
+      - fake_gcs_data:/data
+
+volumes:
+  postgres_data:
+  fake_gcs_data:
