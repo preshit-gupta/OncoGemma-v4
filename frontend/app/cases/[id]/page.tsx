@@ -176,7 +176,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <div className="text-[11px] text-slate-400 flex items-center space-x-3 mt-0.5">
               <span>MPP: {slide?.mpp_x || 0.25} µm/px</span>
               <span>•</span>
-              <span>Base Mag: {slide?.base_mag || 40}x</span>
+              <span className="font-mono text-slate-300">Base Scan: {slide?.base_mag || 40}× Objective (400× Optical / {slide?.mpp_x || 0.25} µm/px)</span>
               <span>•</span>
               <span>Created: {formatISTDateTime(caseDetail?.created_at)}</span>
             </div>

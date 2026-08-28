@@ -449,7 +449,7 @@ export function MitosisViewer({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="font-bold text-sm text-slate-100 tracking-tight">
-                  Stage v4.3: Mitosis Scoring (40×)
+                  Stage v4.3: Mitosis Scoring (40× Objective / 400× Optical)
                 </h1>
                 {workflowPhase === "overview" && (
                   <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
@@ -855,7 +855,7 @@ export function MitosisViewer({
 
                   {/* Badge: 40x Magnification Indicator */}
                   <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-slate-200 shadow">
-                    HPF #{activeHpfSeq} • 40× (0.25 µm/px)
+                    HPF #{activeHpfSeq} • 40× Objective (400× Optical / 0.25 µm/px)
                   </div>
                   <div className="absolute top-3 right-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-emerald-400 font-bold shadow">
                     {activeHpf?.count || 0} Mitoses
