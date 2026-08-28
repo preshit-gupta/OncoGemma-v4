@@ -254,6 +254,16 @@ def approve_case_stage(
     if current_stage:
         current_stage.status = "confirmed"
 
+    # If approving preprocess, also mark associated QC stage as confirmed
+    if stage_name == "preprocess":
+        qc_stage = db.scalars(
+            select(StageExecution)
+            .where(StageExecution.case_id == case_id, StageExecution.stage == "qc")
+            .order_by(StageExecution.attempt.desc())
+        ).first()
+        if qc_stage and qc_stage.status in ("awaiting_review", "done"):
+            qc_stage.status = "confirmed"
+
     # Determine next stage name
     next_stage_map = {
         "preprocess": "triage",

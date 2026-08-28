@@ -25,6 +25,7 @@ interface OpenSeadragonViewerProps {
   overlayImageUri?: string | null;
   overlayOpacity?: number;
   showOverlay?: boolean;
+  showHotspotMask?: boolean;
   hotspots?: ViewerHotspot[];
   selectedHotspotId?: string | null;
   onSelectHotspot?: (id: string) => void;
@@ -44,6 +45,7 @@ export function OpenSeadragonViewer({
   overlayImageUri = null,
   overlayOpacity = 0.6,
   showOverlay = true,
+  showHotspotMask = true,
   hotspots = [],
   selectedHotspotId = null,
   onSelectHotspot,
@@ -62,8 +64,92 @@ export function OpenSeadragonViewer({
   const [svgPolygons, setSvgPolygons] = useState<
     Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean }>
   >([]);
+  const [focusedHotspotId, setFocusedHotspotId] = useState<string | null>(null);
+
+  const isAddingRoiModeRef = useRef(isAddingRoiMode);
+  useEffect(() => {
+    isAddingRoiModeRef.current = isAddingRoiMode;
+  }, [isAddingRoiMode]);
+
+  const onAddRoiClickRef = useRef(onAddRoiClick);
+  useEffect(() => {
+    onAddRoiClickRef.current = onAddRoiClick;
+  }, [onAddRoiClick]);
+
+  const hotspotsRef = useRef(hotspots);
+  useEffect(() => {
+    hotspotsRef.current = hotspots;
+  }, [hotspots]);
 
   const isNormFallbackToOrig = activeLayer === "norm" && currentMag > 10.0;
+
+  const updateScalebar = () => {
+    const viewer = viewerRef.current;
+    if (!viewer?.viewport) return;
+    const zoom = viewer.viewport.getZoom(true);
+    const imageZoom = viewer.viewport.viewportToImageZoom(zoom);
+
+    const effectiveMppX = mppX || 0.25;
+    const umPerPx = effectiveMppX / (imageZoom || 1.0);
+    const targetUm = 120 * umPerPx;
+
+    const niceScales = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+    const chosenScaleUm = niceScales.reduce((prev, curr) =>
+      Math.abs(curr - targetUm) < Math.abs(prev - targetUm) ? curr : prev
+    );
+
+    const actualWidthPx = Math.max(30, Math.min(220, Math.round(chosenScaleUm / umPerPx)));
+
+    setScaleLengthUm(chosenScaleUm);
+    setScalebarWidthPx(actualWidthPx);
+
+    const calculatedMag = imageZoom * (40.0 * 0.25 / effectiveMppX);
+    setCurrentMag(calculatedMag);
+    if (!isEditingZoom) {
+      setCustomZoomInput(calculatedMag.toFixed(1));
+    }
+  };
+
+  const updatePolygons = (items?: HotspotItem[]) => {
+    const viewer = viewerRef.current;
+    if (!viewer?.viewport) return;
+    const currentHotspots = items || hotspotsRef.current || hotspots || [];
+    if (!currentHotspots.length) {
+      setSvgPolygons([]);
+      return;
+    }
+
+    const effectiveMppX = mppX || 0.25;
+    const effectiveMppY = mppY || effectiveMppX;
+
+    const polys = currentHotspots.map((hs) => {
+      const pts: { x: number; y: number }[] = [];
+      let sumX = 0;
+      let sumY = 0;
+
+      for (const pt of (hs.polygon_um || [])) {
+        const imgX = pt[0] / effectiveMppX;
+        const imgY = pt[1] / effectiveMppY;
+        const vpPoint = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(imgX, imgY));
+        const pixelPoint = viewer.viewport.pixelFromPoint(vpPoint, true);
+        pts.push({ x: pixelPoint.x, y: pixelPoint.y });
+        sumX += pixelPoint.x;
+        sumY += pixelPoint.y;
+      }
+
+      const center = pts.length > 0 ? { x: sumX / pts.length, y: sumY / pts.length } : { x: 0, y: 0 };
+      const points = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+
+      return {
+        id: hs.id,
+        points,
+        center,
+        excluded: hs.excluded
+      };
+    });
+
+    setSvgPolygons(polys);
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -115,18 +201,43 @@ export function OpenSeadragonViewer({
       });
     }
 
-    viewer.addHandler("open", () => {
+    const onViewportChange = () => {
       updateScalebar();
       updatePolygons();
+    };
+
+    viewer.addHandler("open", () => {
+      onViewportChange();
       if (viewer.viewport) {
-        viewer.viewport.goHome(true);
+        const currentHs = hotspotsRef.current || [];
+        if (currentHs.length > 0 && currentHs[0].polygon_um?.length > 0) {
+          const firstHs = currentHs[0];
+          const sumX = firstHs.polygon_um.reduce((acc, p) => acc + p[0], 0);
+          const sumY = firstHs.polygon_um.reduce((acc, p) => acc + p[1], 0);
+          const cx_um = sumX / firstHs.polygon_um.length;
+          const cy_um = sumY / firstHs.polygon_um.length;
+          const effectiveMppX = mppX || 0.25;
+          const effectiveMppY = mppY || effectiveMppX;
+          const imgX = cx_um / effectiveMppX;
+          const imgY = cy_um / effectiveMppY;
+          const vpPoint = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(imgX, imgY));
+          const targetImageZoom = 5.0 * (effectiveMppX / (40.0 * 0.25));
+          const targetViewportZoom = viewer.viewport.imageToViewportZoom(targetImageZoom);
+          viewer.viewport.panTo(vpPoint, true);
+          viewer.viewport.zoomTo(targetViewportZoom, vpPoint, true);
+          viewer.viewport.applyConstraints();
+        } else {
+          viewer.viewport.goHome(true);
+        }
       }
     });
 
-    viewer.addHandler("animation", () => {
-      updateScalebar();
-      updatePolygons();
-    });
+    viewer.addHandler("animation", onViewportChange);
+    viewer.addHandler("animation-finish", onViewportChange);
+    viewer.addHandler("pan", onViewportChange);
+    viewer.addHandler("zoom", onViewportChange);
+    viewer.addHandler("resize", onViewportChange);
+    viewer.addHandler("update-viewport", onViewportChange);
 
     viewer.addHandler("canvas-click", (event: any) => {
       if (!isAddingRoiModeRef.current) return;
@@ -158,22 +269,33 @@ export function OpenSeadragonViewer({
       if (overlayItem) {
         overlayItem.setOpacity(showOverlay ? overlayOpacity : 0.0);
       }
+    } else if (overlayImageUri && count === 1) {
+      viewerRef.current.addSimpleImage({
+        url: overlayImageUri,
+        opacity: showOverlay ? overlayOpacity : 0.0,
+        x: 0,
+        y: 0,
+        width: 1.0
+      });
     }
-  }, [overlayOpacity, showOverlay]);
+  }, [overlayOpacity, showOverlay, overlayImageUri]);
 
   // Update SVG polygon coordinates when hotspots change or are added
   useEffect(() => {
-    updatePolygons();
-  }, [JSON.stringify(hotspots)]);
+    hotspotsRef.current = hotspots;
+    updatePolygons(hotspots);
+  }, [hotspots]);
 
-  // Display glowing target reticle when a hotspot is focused/selected
+  // Display animated glowing beacon and bounding box when a hotspot is located/selected
+  // Note: Slide zoom and pan position remain completely stationary as requested
   useEffect(() => {
     if (!selectedHotspotId) return;
     setFocusedHotspotId(selectedHotspotId);
     updatePolygons();
+
     const timer = setTimeout(() => {
       setFocusedHotspotId(null);
-    }, 3800);
+    }, 6000);
     return () => clearTimeout(timer);
   }, [selectedHotspotId]);
 
@@ -341,87 +463,105 @@ export function OpenSeadragonViewer({
         </div>
       </div>
 
-      {/* Main OSD Container */}
+      {/* Main OSD Outer Wrapper */}
       <div 
-        ref={containerRef} 
-        className={`flex-1 w-full h-full relative ${isAddingRoiMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+        className={`flex-1 w-full h-full relative overflow-hidden ${isAddingRoiMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
       >
-        {/* SVG Hotspot Polygons Overlay */}
+        {/* Dedicated OpenSeadragon Mount Target */}
+        <div ref={containerRef} className="absolute inset-0 w-full h-full z-0" />
+
+        {/* SVG Hotspot Polygons & Location Beacon Overlay */}
         <svg
-          className="absolute inset-0 w-full h-full pointer-events-none z-10"
+          className="absolute inset-0 w-full h-full pointer-events-none z-20"
           style={{ overflow: "visible" }}
         >
           {svgPolygons.map((poly) => {
             if (poly.excluded) return null;
+            const isFocused = focusedHotspotId === poly.id;
             const isSelected = selectedHotspotId === poly.id;
+
+            // Only render if mask is turned on OR this specific hotspot was located/focused
+            if (!showHotspotMask && !isFocused && !isSelected) return null;
+
             return (
               <g key={poly.id} className="cursor-pointer pointer-events-auto transition-opacity">
+                {/* Hotspot Boundary Box */}
                 <polygon
                   points={poly.points}
-                  fill={isSelected ? "rgba(14, 165, 233, 0.40)" : "rgba(245, 158, 11, 0.28)"}
-                  stroke={isSelected ? "#38bdf8" : "#f59e0b"}
-                  strokeWidth={isSelected ? "3.5" : "2.5"}
+                  fill={isFocused ? "rgba(14, 165, 233, 0.45)" : isSelected ? "rgba(14, 165, 233, 0.35)" : "rgba(245, 158, 11, 0.22)"}
+                  stroke={isFocused ? "#38bdf8" : isSelected ? "#38bdf8" : "#f59e0b"}
+                  strokeWidth={isFocused ? "4" : isSelected ? "3.5" : "2"}
                   strokeDasharray={poly.id.startsWith("user") ? "6,3" : undefined}
-                  className="transition-colors hover:fill-amber-500/50"
+                  className={`transition-all ${isFocused ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" : "hover:fill-amber-500/40"}`}
                   onClick={() => onSelectHotspot && onSelectHotspot(poly.id)}
                 />
-                {/* High-Visibility Animated Target Crosshair on Focus */}
-                {focusedHotspotId === poly.id && (
+
+                {/* High-Visibility Animated Location Beacon on "Locate" */}
+                {isFocused && (
                   <g transform={`translate(${poly.center.x}, ${poly.center.y})`} className="pointer-events-none">
-                    {/* Animated Outer Pulse Ring */}
+                    {/* Expanding Radar Rings */}
                     <circle
-                      r="40"
-                      fill="rgba(56, 189, 248, 0.15)"
+                      r="65"
+                      fill="rgba(56, 189, 248, 0.18)"
                       stroke="#38bdf8"
-                      strokeWidth="2.5"
+                      strokeWidth="3"
                       className="animate-ping"
-                    />
-                    {/* Concentric Target Reticle */}
-                    <circle
-                      r="24"
-                      fill="none"
-                      stroke="#38bdf8"
-                      strokeWidth="2"
-                      strokeDasharray="4,3"
-                      className="animate-spin"
-                      style={{ animationDuration: "8s" }}
+                      style={{ animationDuration: "1.6s" }}
                     />
                     <circle
-                      r="7"
-                      fill="rgba(56, 189, 248, 0.5)"
+                      r="42"
+                      fill="rgba(14, 165, 233, 0.25)"
+                      stroke="#06b6d4"
+                      strokeWidth="2.5"
+                      className="animate-pulse"
+                    />
+                    <circle
+                      r="16"
+                      fill="#0284c7"
                       stroke="#ffffff"
-                      strokeWidth="2"
+                      strokeWidth="2.5"
                     />
-                    {/* Crosshair Ticks (North, South, East, West) */}
-                    <line x1="-34" y1="0" x2="-14" y2="0" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
-                    <line x1="14" y1="0" x2="34" y2="0" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
-                    <line x1="0" y1="-34" x2="0" y2="-14" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
-                    <line x1="0" y1="14" x2="0" y2="34" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" />
+                    {/* Concentric Rotating Reticle */}
+                    <circle
+                      r="28"
+                      fill="none"
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      strokeDasharray="4,4"
+                      className="animate-spin"
+                      style={{ animationDuration: "6s" }}
+                    />
+                    {/* Radar Crosshairs */}
+                    <line x1="-50" y1="0" x2="-20" y2="0" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
+                    <line x1="20" y1="0" x2="50" y2="0" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
+                    <line x1="0" y1="-50" x2="0" y2="-20" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
+                    <line x1="0" y1="20" x2="0" y2="50" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
                   </g>
                 )}
 
+                {/* Floating Numbered Pin / Badge */}
                 <g transform={`translate(${poly.center.x}, ${poly.center.y})`}>
                   <rect
-                    x="-32"
-                    y="-12"
-                    width="64"
-                    height="24"
+                    x={isFocused ? "-42" : "-32"}
+                    y={isFocused ? "-14" : "-12"}
+                    width={isFocused ? "84" : "64"}
+                    height={isFocused ? "28" : "24"}
                     rx="6"
-                    fill="rgba(15, 23, 42, 0.90)"
-                    stroke={isSelected ? "#38bdf8" : "#f59e0b"}
-                    strokeWidth="1.5"
-                    className="shadow-lg"
+                    fill={isFocused ? "rgba(14, 165, 233, 0.95)" : "rgba(15, 23, 42, 0.90)"}
+                    stroke={isFocused ? "#ffffff" : isSelected ? "#38bdf8" : "#f59e0b"}
+                    strokeWidth={isFocused ? "2" : "1.5"}
+                    className={isFocused ? "shadow-[0_0_12px_rgba(56,189,248,0.9)]" : "shadow-lg"}
                   />
                   <text
                     x="0"
-                    y="4"
+                    y={isFocused ? "4.5" : "4"}
                     fill="#ffffff"
-                    fontSize="11"
+                    fontSize={isFocused ? "11.5" : "11"}
                     fontWeight="700"
                     textAnchor="middle"
                     className="select-none pointer-events-none font-mono"
                   >
-                    {poly.id}
+                    {isFocused ? `🎯 ${poly.id}` : poly.id}
                   </text>
                 </g>
               </g>

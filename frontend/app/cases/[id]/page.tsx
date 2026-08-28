@@ -27,6 +27,8 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
   const [showSlideDetails, setShowSlideDetails] = useState<boolean>(false);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
 
+  const [hasUserNavigated, setHasUserNavigated] = useState<boolean>(false);
+
   const loadData = async () => {
     try {
       const data = await fetchCaseDetail(caseId);
@@ -44,7 +46,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     return () => clearInterval(interval);
   }, [caseId]);
 
-  // Auto-advance activeStage to latest active or completed pipeline stage
+  // Controlled auto-advance: only advances to Stage 3 if Stage 2 (preprocess) is confirmed by pathologist
   useEffect(() => {
     if (!caseDetail?.stages) return;
     const stages = caseDetail.stages;
@@ -53,24 +55,28 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     const triageStage = stages.find((s) => s.stage === "triage");
     const mitosisStage = stages.find((s) => s.stage === "mitosis");
 
-    if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed" || mitosisStage.status === "awaiting_review")) {
-      setActiveStage((prev) => (prev === "ingest" || prev === "preprocess" || prev === "triage" ? "mitosis" : prev));
-    } else if (triageStage && (triageStage.status === "running" || triageStage.status === "done" || triageStage.status === "confirmed" || triageStage.status === "awaiting_review" || triageStage.status === "queued")) {
-      setActiveStage((prev) => (prev === "ingest" || prev === "preprocess" ? "triage" : prev));
-    } else if (prepStage && (prepStage.status === "running" || prepStage.status === "done" || prepStage.status === "confirmed" || prepStage.status === "awaiting_review" || prepStage.status === "queued")) {
-      setActiveStage((prev) => (prev === "ingest" ? "preprocess" : prev));
+    if (!hasUserNavigated) {
+      if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed" || mitosisStage.status === "awaiting_review")) {
+        setActiveStage("mitosis");
+      } else if (triageStage && (triageStage.status === "running" || triageStage.status === "done" || triageStage.status === "confirmed" || triageStage.status === "awaiting_review") && prepStage?.status === "confirmed") {
+        setActiveStage("triage");
+      } else if (prepStage && (prepStage.status === "running" || prepStage.status === "done" || prepStage.status === "confirmed" || prepStage.status === "awaiting_review" || prepStage.status === "queued")) {
+        setActiveStage("preprocess");
+      }
     }
-  }, [caseDetail]);
+  }, [caseDetail, hasUserNavigated]);
 
   const slide = caseDetail?.slides?.[0];
   const ingestStage = caseDetail?.stages?.find((s) => s.stage === "ingest");
   const preprocessStage = caseDetail?.stages?.find((s) => s.stage === "preprocess");
+  const triageStage = caseDetail?.stages?.find((s) => s.stage === "triage");
 
   const isIngestDone = ingestStage?.status === "completed" || ingestStage?.status === "done";
   const isIngestRunning = ingestStage?.status === "running" || ingestStage?.status === "queued" || !ingestStage;
   const isIngestFailed = ingestStage?.status === "failed";
 
-  const isPreprocessDone = preprocessStage?.status === "done" || preprocessStage?.status === "confirmed";
+  const isPreprocessDone = preprocessStage?.status === "done" || preprocessStage?.status === "confirmed" || preprocessStage?.status === "awaiting_review";
+  const isTriageDone = triageStage?.status === "done" || triageStage?.status === "confirmed" || triageStage?.status === "awaiting_review";
 
   const handleRetryIngest = async () => {
     try {
@@ -86,6 +92,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     setActionLoading(true);
     try {
       await approveStage(caseId, "preprocess");
+      setHasUserNavigated(true);
       setActiveStage("triage");
       await loadData();
     } catch (err) {
@@ -100,11 +107,40 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     setActionLoading(true);
     try {
       await retryStage(caseId, "preprocess");
+      setHasUserNavigated(true);
       setActiveStage("preprocess");
       await loadData();
     } catch (err) {
       console.error(err);
       alert("Failed to re-process slide");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReprocessTriage = async () => {
+    setActionLoading(true);
+    try {
+      await retryStage(caseId, "triage");
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to re-process hotspot triage");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApproveTriage = async () => {
+    setActionLoading(true);
+    try {
+      await approveStage(caseId, "triage");
+      setHasUserNavigated(true);
+      setActiveStage("mitosis");
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to confirm triage");
     } finally {
       setActionLoading(false);
     }
@@ -143,7 +179,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
         </div>
 
         <div className="flex items-center space-x-2">
-          {/* Pathologist Action Buttons for Step 2 */}
+          {/* Pathologist Action Buttons for Step 2 (v4.1) */}
           {isPreprocessDone && activeStage === "preprocess" && (
             <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
               <button
@@ -164,6 +200,21 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Approve Slide & Proceed to Step 3</span>
+              </button>
+            </div>
+          )}
+
+          {/* Pathologist Action Buttons for Step 3 (v4.2) */}
+          {isTriageDone && activeStage === "triage" && (
+            <div className="flex items-center space-x-2 border-r border-slate-700 pr-3 mr-1">
+              <button
+                onClick={handleReprocessTriage}
+                disabled={actionLoading}
+                className="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-600 text-white rounded-lg transition text-xs font-semibold flex items-center space-x-1.5 shadow border border-amber-500/50"
+                title="Re-run Vertex AI Path Foundation screening and hotspot assessment"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${actionLoading ? "animate-spin" : ""}`} />
+                <span>Re-Assess Hotspots</span>
               </button>
             </div>
           )}
@@ -194,7 +245,10 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
           caseId={caseId}
           stages={caseDetail?.stages || []}
           activeStage={activeStage}
-          onSelectStage={setActiveStage}
+          onSelectStage={(stage) => {
+            setHasUserNavigated(true);
+            setActiveStage(stage);
+          }}
           onRefresh={loadData}
         />
 
@@ -241,13 +295,16 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
             <TriageViewer
               caseId={caseId}
               mppX={slide?.mpp_x || 0.25}
+              mppY={slide?.mpp_y || slide?.mpp_x || 0.25}
               imageWidthPx={slide?.width_px || 2048}
               imageHeightPx={slide?.height_px || 2048}
+              onRefreshCase={loadData}
             />
           ) : (
             <OpenSeadragonViewer
               caseId={caseId}
               mppX={slide?.mpp_x || 0.25}
+              mppY={slide?.mpp_y || slide?.mpp_x || 0.25}
               imageWidthPx={slide?.width_px || 2048}
               imageHeightPx={slide?.height_px || 2048}
             />

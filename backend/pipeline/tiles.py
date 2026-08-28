@@ -79,18 +79,24 @@ def read_region_srgb(
 
     # 1. OpenSlide Slide object
     if hasattr(slide, "read_region"):
-        best_level = 0
-        if hasattr(slide, "get_best_level_for_downsample"):
-            target_downsample = w_px_0 / max(1, target_w_px)
-            best_level = slide.get_best_level_for_downsample(target_downsample)
+        dim_w, dim_h = getattr(slide, "dimensions", (100000, 100000))
+        if x_px_0 >= dim_w or y_px_0 >= dim_h or (x_px_0 + w_px_0) <= 0 or (y_px_0 + h_px_0) <= 0:
+            pil_tile = Image.new("RGB", (max(1, target_w_px), max(1, target_h_px)), color=(245, 240, 245))
+        else:
+            best_level = 0
+            if hasattr(slide, "get_best_level_for_downsample"):
+                target_downsample = w_px_0 / max(1, target_w_px)
+                best_level = slide.get_best_level_for_downsample(target_downsample)
 
-        level_ds = slide.level_downsamples[best_level] if hasattr(slide, "level_downsamples") else 1.0
-        w_px_lvl = max(1, int(round(w_px_0 / level_ds)))
-        h_px_lvl = max(1, int(round(h_px_0 / level_ds)))
+            level_ds = slide.level_downsamples[best_level] if hasattr(slide, "level_downsamples") else 1.0
+            w_px_lvl = max(1, int(round(w_px_0 / level_ds)))
+            h_px_lvl = max(1, int(round(h_px_0 / level_ds)))
 
-        pil_tile = slide.read_region((x_px_0, y_px_0), best_level, (w_px_lvl, h_px_lvl))
-        if pil_tile.mode != "RGB":
-            pil_tile = pil_tile.convert("RGB")
+            safe_x = max(0, min(dim_w - 1, x_px_0))
+            safe_y = max(0, min(dim_h - 1, y_px_0))
+            pil_tile = slide.read_region((safe_x, safe_y), best_level, (w_px_lvl, h_px_lvl))
+            if pil_tile.mode != "RGB":
+                pil_tile = pil_tile.convert("RGB")
 
     # 2. PIL Image object fallback
     elif hasattr(slide, "crop"):

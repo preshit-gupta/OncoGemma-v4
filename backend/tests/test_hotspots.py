@@ -3,7 +3,7 @@ import pytest
 from pipeline.hotspots import extract_hotspots
 
 
-def test_extract_hotspots_synthetic_blobs():
+def test_extract_hotspots_standardized_candidates():
     # Create 100x100 grid (stride = 224 µm => total grid size 22.4 mm x 22.4 mm)
     ny, nx = 100, 100
     prob_grid = np.zeros((ny, nx), dtype=np.float32)
@@ -23,10 +23,8 @@ def test_extract_hotspots_synthetic_blobs():
     cfg = {
         "sigma": 2.0,
         "prob_threshold": 0.5,
-        "min_area_mm2": 0.5,
         "max_hotspots": 8,
-        "margin_um": 100.0,
-        "simplify_tolerance_um": 50.0
+        "hpf_half_size_um": 300.0
     }
 
     hotspots = extract_hotspots(
@@ -36,12 +34,12 @@ def test_extract_hotspots_synthetic_blobs():
         cfg=cfg
     )
 
-    assert len(hotspots) == 2
+    assert len(hotspots) == 8
     assert hotspots[0]["id"] == "hs_01"
     assert hotspots[1]["id"] == "hs_02"
     assert hotspots[0]["prob_mean"] >= 0.8
-    assert hotspots[0]["area_mm2"] > 0.5
-    assert len(hotspots[0]["polygon_um"]) > 3
+    assert hotspots[0]["area_mm2"] == 0.36  # Standard 600 µm x 600 µm HPF candidate
+    assert len(hotspots[0]["polygon_um"]) == 5
 
 
 def test_extract_hotspots_empty_and_nan():
@@ -49,10 +47,8 @@ def test_extract_hotspots_empty_and_nan():
     cfg = {
         "sigma": 2.0,
         "prob_threshold": 0.5,
-        "min_area_mm2": 0.5,
         "max_hotspots": 8,
-        "margin_um": 100.0,
-        "simplify_tolerance_um": 50.0
+        "hpf_half_size_um": 300.0
     }
 
     hotspots = extract_hotspots(
@@ -65,20 +61,20 @@ def test_extract_hotspots_empty_and_nan():
     assert hotspots == []
 
 
-def test_extract_hotspots_min_area_filter():
+def test_extract_hotspots_spatial_separation():
     ny, nx = 50, 50
     prob_grid = np.zeros((ny, nx), dtype=np.float32)
 
-    # Very small blob: 2x2 cells (2 * 224 µm = 448 µm => ~0.2 mm² < 0.5 mm²)
-    prob_grid[10:12, 10:12] = 0.9
+    # Concentrated hotspot at center
+    prob_grid[25, 25] = 0.99
+    prob_grid[24, 25] = 0.98
+    prob_grid[25, 24] = 0.97
 
     cfg = {
         "sigma": 1.0,
         "prob_threshold": 0.5,
-        "min_area_mm2": 0.5,
-        "max_hotspots": 8,
-        "margin_um": 50.0,
-        "simplify_tolerance_um": 10.0
+        "max_hotspots": 5,
+        "hpf_half_size_um": 300.0
     }
 
     hotspots = extract_hotspots(
@@ -88,4 +84,6 @@ def test_extract_hotspots_min_area_filter():
         cfg=cfg
     )
 
-    assert len(hotspots) == 0
+    assert len(hotspots) == 5
+    assert hotspots[0]["id"] == "hs_01"
+    assert hotspots[0]["area_mm2"] == 0.36

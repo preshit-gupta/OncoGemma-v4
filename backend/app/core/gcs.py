@@ -85,8 +85,15 @@ def ensure_buckets_exist():
     for bucket_name in [settings.GCS_RAW_BUCKET, settings.GCS_PYRAMIDS_BUCKET, settings.GCS_ARTIFACTS_BUCKET]:
         try:
             bucket = client.bucket(bucket_name)
-            if hasattr(bucket, "exists") and not bucket.exists():
-                if hasattr(client, "create_bucket"):
-                    client.create_bucket(bucket_name)
+            if hasattr(bucket, "exists"):
+                try:
+                    exists = bucket.exists(timeout=2.0)
+                except Exception:
+                    exists = True
+                if not exists and hasattr(client, "create_bucket"):
+                    try:
+                        client.create_bucket(bucket_name, timeout=2.0)
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"[GCS] Bucket initialization note for {bucket_name}: {e}")

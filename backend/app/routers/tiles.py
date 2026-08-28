@@ -1,6 +1,7 @@
 import uuid
 import os
 import math
+import threading
 from io import BytesIO
 import numpy as np
 from PIL import Image
@@ -18,6 +19,8 @@ from pipeline.tiles import read_region_srgb
 
 router = APIRouter(prefix="/api/v1/cases", tags=["tiles"])
 
+_OPENSLIDE_TILE_LOCK = threading.Lock()
+
 def generate_tile_on_the_fly(
     slide_file_path: str,
     slide_obj: Slide,
@@ -29,50 +32,52 @@ def generate_tile_on_the_fly(
     """
     On-the-fly tile rendering fallback using OpenSlide / Pillow.
     Computes exact tile bounding box at DeepZoom level z and returns PNG/JPEG bytes.
+    Thread-safe to prevent concurrent OpenSlide C-library access violations.
     """
     try:
-        try:
-            import openslide
-            slide = openslide.OpenSlide(slide_file_path)
-        except Exception:
-            slide = Image.open(slide_file_path)
+        with _OPENSLIDE_TILE_LOCK:
+            try:
+                import openslide
+                slide = openslide.OpenSlide(slide_file_path)
+            except Exception:
+                slide = Image.open(slide_file_path)
 
-        slide_w = float(getattr(slide_obj, "width_px", 2048) or 2048)
-        slide_h = float(getattr(slide_obj, "height_px", 2048) or 2048)
-        mpp_x = float(getattr(slide_obj, "mpp_x", 0.25) or 0.25)
-        mpp_y = float(getattr(slide_obj, "mpp_y", 0.25) or 0.25)
+            slide_w = float(getattr(slide_obj, "width_px", 2048) or 2048)
+            slide_h = float(getattr(slide_obj, "height_px", 2048) or 2048)
+            mpp_x = float(getattr(slide_obj, "mpp_x", 0.25) or 0.25)
+            mpp_y = float(getattr(slide_obj, "mpp_y", 0.25) or 0.25)
 
-        max_dim = max(slide_w, slide_h)
-        max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 11
+            max_dim = max(slide_w, slide_h)
+            max_level = int(math.ceil(math.log2(max_dim))) if max_dim > 0 else 11
 
-        tile_size = 256
-        level_scale = 2 ** (z - max_level)
+            tile_size = 256
+            level_scale = 2 ** (z - max_level)
 
-        # Region bounding box at level 0 in pixels
-        w_px_0 = tile_size / level_scale
-        h_px_0 = tile_size / level_scale
-        x_px_0 = c * w_px_0
-        y_px_0 = r * h_px_0
+            # Region bounding box at level 0 in pixels
+            w_px_0 = tile_size / level_scale
+            h_px_0 = tile_size / level_scale
+            x_px_0 = c * w_px_0
+            y_px_0 = r * h_px_0
 
-        # Convert to micrometers
-        x_um = x_px_0 * mpp_x
-        y_um = y_px_0 * mpp_y
-        w_um = w_px_0 * mpp_x
-        h_um = h_px_0 * mpp_y
+            # Convert to micrometers
+            x_um = x_px_0 * mpp_x
+            y_um = y_px_0 * mpp_y
+            w_um = w_px_0 * mpp_x
+            h_um = h_px_0 * mpp_y
 
-        tile_arr, _ = read_region_srgb(
-            slide,
-            x_um=x_um,
-            y_um=y_um,
-            w_um=w_um,
-            h_um=h_um,
-            out_px=(tile_size, tile_size),
-            mpp_x=mpp_x,
-            mpp_y=mpp_y
-        )
+            tile_arr, _ = read_region_srgb(
+                slide,
+                x_um=x_um,
+                y_um=y_um,
+                w_um=w_um,
+                h_um=h_um,
+                out_px=(tile_size, tile_size),
+                mpp_x=mpp_x,
+                mpp_y=mpp_y
+            )
 
-        if hasattr(slide, "close"):
-            slide.close()
+            if hasattr(slide, "close"):
+                slide.close()
 
         if layer == "norm":
             try:

@@ -5,6 +5,7 @@ Handles triage data fetching, RFC-6902 review edit recording, and stage confirma
 import os
 import io
 import json
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 import numpy as np
@@ -25,6 +26,8 @@ from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
 
 router = APIRouter(prefix="/api/v1/stages/triage", tags=["triage"])
+
+_TRIAGE_THUMBNAIL_LOCK = threading.Lock()
 
 
 class TriageEditsPayload(BaseModel):
@@ -260,17 +263,24 @@ def get_hotspot_thumbnail(
 
     if candidate_paths:
         try:
-            import openslide
-            slide_file = candidate_paths[0]
-            os_slide = openslide.OpenSlide(slide_file)
-            crop_w_px = int(round(field_um / mpp_x))
-            crop_h_px = int(round(field_um / mpp_y))
+            with _TRIAGE_THUMBNAIL_LOCK:
+                import openslide
+                slide_file = candidate_paths[0]
+                os_slide = None
+                try:
+                    os_slide = openslide.OpenSlide(slide_file)
+                    dim_w, dim_h = getattr(os_slide, "dimensions", (100000, 100000))
+                    crop_w_px = int(round(field_um / mpp_x))
+                    crop_h_px = int(round(field_um / mpp_y))
 
-            x0 = max(0, cx_px - crop_w_px // 2)
-            y0 = max(0, cy_px - crop_h_px // 2)
+                    x0 = max(0, min(dim_w - crop_w_px, cx_px - crop_w_px // 2))
+                    y0 = max(0, min(dim_h - crop_h_px, cy_px - crop_h_px // 2))
 
-            # Read region at highest resolution level 0
-            patch_raw = os_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
+                    # Read region at highest resolution level 0
+                    patch_raw = os_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
+                finally:
+                    if os_slide and hasattr(os_slide, "close"):
+                        os_slide.close()
 
             # Apply Macenko Stain Normalization if requested
             if stain == "norm":

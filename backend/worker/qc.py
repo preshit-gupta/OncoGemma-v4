@@ -112,29 +112,11 @@ def run_qc(stage_execution: StageExecution, session: Session) -> tuple[str, dict
         case_obj = session.get(Case, case_id)
 
         if verdict == "pass":
-            stage_execution.status = "done"
-            # Auto-chain next pipeline stage ('triage')
-            existing_triage = session.scalars(
-                select(StageExecution).where(
-                    StageExecution.case_id == case_id,
-                    StageExecution.stage == "triage",
-                    StageExecution.attempt == 1
-                )
-            ).first()
-
-            if not existing_triage:
-                next_triage_stage = StageExecution(
-                    case_id=case_id,
-                    stage="triage",
-                    attempt=1,
-                    status="queued",
-                    input_ref={"slide_id": str(slide_id), "qc_output_ref": output_ref}
-                )
-                session.add(next_triage_stage)
-
+            stage_execution.status = "awaiting_review"
+            # Pauses for Pathologist sign-off on Stage 2 (v4.1 Stain & QC Gate)
+            # Stage 3 (v4.2 Hotspot Triage) will be queued when pathologist clicks "Approve Slide & Proceed to Step 3"
         elif verdict == "warn":
             stage_execution.status = "awaiting_review"
-
         elif verdict == "fail":
             stage_execution.status = "failed"
             stage_execution.error = f"QC Hard Failure: {[c['message'] for c in qc_result['checks'] if c['status'] == 'fail']}"
