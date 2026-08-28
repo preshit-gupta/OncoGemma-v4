@@ -209,26 +209,8 @@ export function OpenSeadragonViewer({
     viewer.addHandler("open", () => {
       onViewportChange();
       if (viewer.viewport) {
-        const currentHs = hotspotsRef.current || [];
-        if (currentHs.length > 0 && currentHs[0].polygon_um?.length > 0) {
-          const firstHs = currentHs[0];
-          const sumX = firstHs.polygon_um.reduce((acc, p) => acc + p[0], 0);
-          const sumY = firstHs.polygon_um.reduce((acc, p) => acc + p[1], 0);
-          const cx_um = sumX / firstHs.polygon_um.length;
-          const cy_um = sumY / firstHs.polygon_um.length;
-          const effectiveMppX = mppX || 0.25;
-          const effectiveMppY = mppY || effectiveMppX;
-          const imgX = cx_um / effectiveMppX;
-          const imgY = cy_um / effectiveMppY;
-          const vpPoint = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(imgX, imgY));
-          const targetImageZoom = 5.0 * (effectiveMppX / (40.0 * 0.25));
-          const targetViewportZoom = viewer.viewport.imageToViewportZoom(targetImageZoom);
-          viewer.viewport.panTo(vpPoint, true);
-          viewer.viewport.zoomTo(targetViewportZoom, vpPoint, true);
-          viewer.viewport.applyConstraints();
-        } else {
-          viewer.viewport.goHome(true);
-        }
+        viewer.viewport.goHome(true);
+        viewer.viewport.applyConstraints();
       }
     });
 

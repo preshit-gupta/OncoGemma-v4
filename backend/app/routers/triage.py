@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.gcs import get_local_cache_dir
 from app.core.db import get_db
+from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -26,8 +27,6 @@ from app.models.hotspot import Hotspot
 from app.models.audit import AuditEvent
 
 router = APIRouter(prefix="/api/v1/stages/triage", tags=["triage"])
-
-_TRIAGE_THUMBNAIL_LOCK = threading.Lock()
 
 
 class TriageEditsPayload(BaseModel):
@@ -263,7 +262,7 @@ def get_hotspot_thumbnail(
 
     if candidate_paths:
         try:
-            with _TRIAGE_THUMBNAIL_LOCK:
+            with OPENSLIDE_GLOBAL_LOCK:
                 import openslide
                 slide_file = candidate_paths[0]
                 os_slide = None

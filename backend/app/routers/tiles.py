@@ -13,13 +13,12 @@ from app.core.db import get_db
 from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
 from app.core.gcs import get_gcs_client, get_local_cache_dir
+from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
 from app.models.case import Case
 from app.models.slide import Slide
 from pipeline.tiles import read_region_srgb
 
 router = APIRouter(prefix="/api/v1/cases", tags=["tiles"])
-
-_OPENSLIDE_TILE_LOCK = threading.Lock()
 
 def generate_tile_on_the_fly(
     slide_file_path: str,
@@ -35,7 +34,7 @@ def generate_tile_on_the_fly(
     Thread-safe to prevent concurrent OpenSlide C-library access violations.
     """
     try:
-        with _OPENSLIDE_TILE_LOCK:
+        with OPENSLIDE_GLOBAL_LOCK:
             try:
                 import openslide
                 slide = openslide.OpenSlide(slide_file_path)
