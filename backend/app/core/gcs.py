@@ -1,6 +1,8 @@
 import os
 import shutil
-import socket
+import glob
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 def get_local_cache_dir() -> str:
     """Return absolute path to local disk cache directory for offline/fast read caching."""
@@ -49,6 +51,10 @@ class LocalDiskBlobFallback:
             img = Image.new("RGB", (512, 512), (240, 240, 240))
             img.save(destination_filename, "JPEG")
 
+    def generate_signed_url(self, version: str = "v4", expiration: timedelta | None = None, method: str = "GET") -> str:
+        # Local mock signed URL
+        return f"/api/v1/storage/{self.blob_name}"
+
 class LocalDiskClientFallback:
     """Fallback GCS client wrapping local disk cache."""
     def __init__(self, base_dir: str):
@@ -69,7 +75,6 @@ def get_gcs_client():
     """
     from app.core.config import settings
 
-    # Always attempt real Google Cloud Storage first
     try:
         from google.cloud import storage
         client = storage.Client(project=settings.GCP_PROJECT_ID)
@@ -97,3 +102,64 @@ def ensure_buckets_exist():
                         pass
         except Exception as e:
             print(f"[GCS] Bucket initialization note for {bucket_name}: {e}")
+
+def get_gcs_tile_template_url(slide_id: str, layer: str = "orig") -> str:
+    """
+    Returns direct high-speed streaming tile URL template for OpenSeadragon.
+    Format: https://cdn.oncogemma.com/{slide_id}/{layer}/{z}/{x}_{y}.png
+    Or fallback: /api/v1/cases/{case_id}/tiles/{layer}/{z}/{x}_{y}.png
+    """
+    from app.core.config import settings
+    if settings.CDN_BASE_URL:
+        return f"{settings.CDN_BASE_URL.rstrip('/')}/{slide_id}/{layer}/{{z}}/{{x}}_{{y}}.png"
+    return f"/api/v1/cases/tiles/{slide_id}/{layer}/{{z}}/{{x}}_{{y}}.png"
+
+def get_gcs_artifact_direct_url(relative_gcs_path: str) -> str:
+    """
+    Resolves a gs:// or relative artifact path to a direct Cloud CDN / GCS URL or API fallback.
+    """
+    from app.core.config import settings
+    path = relative_gcs_path.replace("gs://", "")
+    if settings.CDN_BASE_URL:
+        return f"{settings.CDN_BASE_URL.rstrip('/')}/{path}"
+    return f"https://storage.googleapis.com/{path}"
+
+def upload_directory_to_gcs_and_purge(local_dir: str, bucket_name: str, dest_prefix: str, max_workers: int = 16):
+    """
+    Uploads an entire directory tree directly to Google Cloud Storage concurrently,
+    and immediately purges the local directory to guarantee 100% statelessness.
+    """
+    client = get_gcs_client()
+    bucket = client.bucket(bucket_name)
+    all_files = glob.glob(os.path.join(local_dir, "**", "*.*"), recursive=True)
+
+    def _upload_one(local_file: str):
+        try:
+            rel_path = os.path.relpath(local_file, local_dir).replace("\\", "/")
+            blob_path = f"{dest_prefix.strip('/')}/{rel_path}"
+            blob = bucket.blob(blob_path)
+            content_type = "image/png" if local_file.endswith(".png") else "image/jpeg" if local_file.endswith((".jpg", ".jpeg")) else "application/json"
+            blob.upload_from_filename(local_file, content_type=content_type, timeout=15)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        list(pool.map(_upload_one, all_files))
+
+    # Also replicate to local cache for offline/dev speed
+    local_cache_base = get_local_cache_dir()
+    local_dest = os.path.join(local_cache_base, bucket_name, dest_prefix.replace("/", os.sep))
+    if os.path.abspath(local_dest) != os.path.abspath(local_dir):
+        if os.path.exists(local_dest):
+            shutil.rmtree(local_dest, ignore_errors=True)
+        os.makedirs(os.path.dirname(local_dest), exist_ok=True)
+        try:
+            shutil.copytree(local_dir, local_dest)
+        except Exception:
+            pass
+
+    # Purge scratch directory
+    try:
+        shutil.rmtree(local_dir, ignore_errors=True)
+    except Exception:
+        pass

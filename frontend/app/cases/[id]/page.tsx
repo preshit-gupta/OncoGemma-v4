@@ -299,6 +299,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               imageWidthPx={slide?.width_px || 2048}
               imageHeightPx={slide?.height_px || 2048}
               onRefreshCase={loadData}
+              tileUrlTemplate={caseDetail?.tile_url_template}
             />
           ) : (
             <OpenSeadragonViewer
@@ -307,6 +308,7 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
               mppY={slide?.mpp_y || slide?.mpp_x || 0.25}
               imageWidthPx={slide?.width_px || 2048}
               imageHeightPx={slide?.height_px || 2048}
+              tileUrlTemplate={caseDetail?.tile_url_template}
             />
           )}
         </div>

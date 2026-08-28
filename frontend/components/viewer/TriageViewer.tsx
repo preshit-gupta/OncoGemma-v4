@@ -60,6 +60,7 @@ interface TriageViewerProps {
   imageWidthPx?: number;
   imageHeightPx?: number;
   onRefreshCase?: () => void;
+  tileUrlTemplate?: string | null;
 }
 
 export function TriageViewer({
@@ -68,7 +69,8 @@ export function TriageViewer({
   mppY = 0.25,
   imageWidthPx = 2048,
   imageHeightPx = 2048,
-  onRefreshCase
+  onRefreshCase,
+  tileUrlTemplate = null
 }: TriageViewerProps) {
   const [data, setData] = useState<TriageData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -257,7 +259,11 @@ export function TriageViewer({
           mppY={mppY || mppX}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
-          overlayImageUri={`${API_BASE}/api/v1/stages/triage/${caseId}/heatmap`}
+          overlayImageUri={
+            data?.heatmap_direct_url
+              ? (data.heatmap_direct_url.startsWith("http") ? data.heatmap_direct_url : `${API_BASE}${data.heatmap_direct_url}`)
+              : `${API_BASE}/api/v1/stages/triage/${caseId}/heatmap`
+          }
           overlayOpacity={heatmapOpacity}
           showOverlay={showHeatmap}
           showHotspotMask={showHotspotMask}
@@ -266,6 +272,7 @@ export function TriageViewer({
           onSelectHotspot={setSelectedHotspotId}
           isAddingRoiMode={isAddingRoiMode}
           onAddRoiClick={handleAddRoiFromClick}
+          tileUrlTemplate={tileUrlTemplate}
         />
 
         {/* Interactive Click-to-Add ROI Floating Banner */}
@@ -497,9 +504,12 @@ export function TriageViewer({
                         const poly = hs.polygon_um || [];
                         const cx = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[0], 0) / poly.length) : 0;
                         const cy = poly.length > 0 ? Math.round(poly.reduce((sum, p) => sum + p[1], 0) / poly.length) : 0;
+                        const thumbSrc = hs.thumbnail_url
+                          ? (hs.thumbnail_url.startsWith("http") ? hs.thumbnail_url : `${API_BASE}${hs.thumbnail_url}`)
+                          : `${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${hs.id}/thumbnail?mag=10x&cx=${cx}&cy=${cy}`;
                         return (
                           <img
-                            src={`${API_BASE}/api/v1/stages/triage/${caseId}/hotspots/${hs.id}/thumbnail?mag=10x&cx=${cx}&cy=${cy}`}
+                            src={thumbSrc}
                             alt={`10x patch ${hs.id}`}
                             className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
                           />

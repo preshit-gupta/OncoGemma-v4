@@ -135,11 +135,18 @@ def get_triage_data(case_id: str, db: Session = Depends(get_db)):
     machine_hotspots = machine_output.get("hotspots", [])
     effective_hotspots = apply_edit_ops(machine_hotspots, edits)
 
+    # Ensure all effective hotspots have thumbnail_url
+    for hs in effective_hotspots:
+        if not hs.get("thumbnail_url"):
+            hs_id = hs.get("id")
+            hs["thumbnail_url"] = f"/api/v1/stages/triage/{case_id}/hotspots/{hs_id}/thumbnail?mag=10x"
+
     return {
         "case_id": case_id,
         "stage_execution_id": str(stage_exec.id),
         "status": stage_exec.status,
         "heatmap_png_uri": machine_output.get("heatmap_png_uri"),
+        "heatmap_direct_url": machine_output.get("heatmap_direct_url") or f"/api/v1/stages/triage/{case_id}/heatmap",
         "prob_grid_uri": machine_output.get("prob_grid_uri"),
         "grid": machine_output.get("grid"),
         "machine_hotspots": machine_hotspots,
@@ -186,6 +193,12 @@ def get_hotspot_thumbnail(
 ):
     """Extracts and streams a calibrated microscopic RGB patch centered on the specified hotspot or coordinates."""
     cache_base = get_local_cache_dir()
+
+    # 0. Fast Path: Serve pre-rendered cloud artifact thumbnail if present
+    pregen_patch_path = os.path.join(cache_base, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "triage", "patches", f"{hotspot_id}_thumb.png")
+    if os.path.exists(pregen_patch_path) and mag == "10x":
+        return FileResponse(pregen_patch_path, media_type="image/png")
+
     case_obj = db.get(Case, case_id)
     slide_obj = case_obj.slides[0] if case_obj and case_obj.slides else None
     if not slide_obj:

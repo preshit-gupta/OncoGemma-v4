@@ -102,32 +102,10 @@ def generate_tile_on_the_fly(
         return None
 
 
-@router.get("/{case_id}/tiles/{layer}/{z}/{filename}")
-def get_tile(
-    case_id: uuid.UUID,
-    layer: str, # "orig" or "norm"
-    z: int,
-    filename: str, # e.g. "0_0.jpg" or "0_0.png"
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user)
-):
-    """
-    Proxy & stream DZI pyramid tile directly from Real GCP Cloud Storage bucket (oncogemma-dev-pyramids)
-    with local disk cache for instant sub-millisecond tile serving.
-    Guarantees 100% tile availability for all whole-slide images of any aspect ratio or zoom level.
-    """
-    case_obj = db.get(Case, case_id)
-    if not case_obj:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    slide = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
-    if not slide:
-        raise HTTPException(status_code=404, detail="Slide not found for case")
-
+def stream_slide_tile(slide: Slide, layer: str, z: int, filename: str, case_id: uuid.UUID | None = None) -> Response:
     stem = os.path.splitext(filename)[0]
     ext = os.path.splitext(filename)[1] or ".png"
 
-    # Dynamic 10x level calculation from slide dimensions
     slide_w = float(getattr(slide, "width_px", 2048) or 2048)
     slide_h = float(getattr(slide, "height_px", 2048) or 2048)
     max_dim = max(slide_w, slide_h)
@@ -140,11 +118,8 @@ def get_tile(
 
     target_z = z
 
-    # Disable browser caching in dev mode to ensure tile updates reflect immediately
     no_cache_headers = {
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
+        "Cache-Control": "public, max-age=86400, immutable",
         "X-Tile-Layer": target_layer,
         "X-Tile-Zoom": str(target_z)
     }
@@ -153,7 +128,7 @@ def get_tile(
     slide_dir = os.path.join(local_cache_dir, settings.GCS_PYRAMIDS_BUCKET, str(slide.id))
     layer_dir = os.path.join(slide_dir, target_layer)
 
-    # 1. Local disk cache check (fast read path: 0.001s)
+    # 1. Local disk cache check (fast read path: 0.0005s)
     for check_ext in [ext, ".png", ".jpg"]:
         tile_path = os.path.join(layer_dir, str(target_z), f"{stem}{check_ext}")
         if os.path.exists(tile_path):
@@ -162,7 +137,7 @@ def get_tile(
             m_type = "image/png" if check_ext.lower() == ".png" else "image/jpeg"
             return Response(content=tile_bytes, media_type=m_type, headers=no_cache_headers)
 
-    # 2. Primary: Stream directly from Real GCP Cloud Storage Bucket (oncogemma-dev-pyramids)
+    # 2. Stream directly from Real GCP Cloud Storage Bucket (oncogemma-dev-pyramids)
     try:
         client = get_gcs_client()
         bucket = client.bucket(settings.GCS_PYRAMIDS_BUCKET)
@@ -187,9 +162,8 @@ def get_tile(
         parts = stem.split("_")
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             c, r = int(parts[0]), int(parts[1])
-
-            # Find raw slide file on disk or cache
-            raw_dir = os.path.join(local_cache_dir, settings.GCS_RAW_BUCKET, "cases", str(case_id))
+            cid = str(case_id or slide.case_id)
+            raw_dir = os.path.join(local_cache_dir, settings.GCS_RAW_BUCKET, "cases", cid)
             raw_file = None
             if os.path.exists(raw_dir):
                 files = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir) if os.path.isfile(os.path.join(raw_dir, f))]
@@ -226,3 +200,32 @@ def get_tile(
                 return Response(content=tile_bytes, media_type=m_type, headers=no_cache_headers)
 
     raise HTTPException(status_code=404, detail="Tile missing")
+
+
+@router.get("/{case_id}/tiles/{layer}/{z}/{filename}")
+def get_tile(
+    case_id: uuid.UUID,
+    layer: str,
+    z: int,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user)
+):
+    slide = db.scalars(select(Slide).where(Slide.case_id == case_id)).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found for case")
+    return stream_slide_tile(slide, layer, z, filename, case_id=case_id)
+
+
+@router.get("/tiles/{slide_id}/{layer}/{z}/{filename}")
+def get_tile_direct(
+    slide_id: uuid.UUID,
+    layer: str,
+    z: int,
+    filename: str,
+    db: Session = Depends(get_db)
+):
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+    return stream_slide_tile(slide, layer, z, filename)

@@ -40,6 +40,8 @@ class CaseDetailResponse(BaseModel):
     created_at: datetime
     slides: list[dict] = []
     stages: list[dict] = []
+    tile_url_template: str | None = None
+    cdn_base_url: str | None = None
 
     @field_serializer("created_at")
     def serialize_created_at(self, dt: datetime, _info) -> str:

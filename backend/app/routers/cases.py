@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.db import get_db
 from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
-from app.core.gcs import get_gcs_client, get_local_cache_dir
+from app.core.gcs import get_gcs_client, get_local_cache_dir, get_gcs_tile_template_url
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -425,11 +425,18 @@ def get_case_detail(
         for st in stages
     ]
 
+    primary_slide_id = str(slides[0].id) if slides else None
+    tile_template = None
+    if primary_slide_id:
+        tile_template = get_gcs_tile_template_url(primary_slide_id, "orig")
+
     return CaseDetailResponse(
         id=case_obj.id,
         created_by=case_obj.created_by,
         status=case_obj.status,
         created_at=case_obj.created_at,
         slides=slides_data,
-        stages=stages_data
+        stages=stages_data,
+        tile_url_template=tile_template,
+        cdn_base_url=settings.CDN_BASE_URL
     )

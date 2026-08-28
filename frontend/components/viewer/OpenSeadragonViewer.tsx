@@ -31,6 +31,7 @@ interface OpenSeadragonViewerProps {
   onSelectHotspot?: (id: string) => void;
   isAddingRoiMode?: boolean;
   onAddRoiClick?: (x_um: number, y_um: number) => void;
+  tileUrlTemplate?: string | null;
 }
 
 const ZOOM_PRESETS = [2.5, 5, 10, 20, 40];
@@ -50,7 +51,8 @@ export function OpenSeadragonViewer({
   selectedHotspotId = null,
   onSelectHotspot,
   isAddingRoiMode = false,
-  onAddRoiClick
+  onAddRoiClick,
+  tileUrlTemplate = null
 }: OpenSeadragonViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);
@@ -172,6 +174,13 @@ export function OpenSeadragonViewer({
       getTileUrl: (level: number, x: number, y: number) => {
         // Beyond 10x level (level > maxLevel - 2), normalized pyramid falls back to original colors
         const effectiveLayer = (activeLayer === "norm" && level > maxLevel - 2) ? "orig" : activeLayer;
+        if (tileUrlTemplate) {
+          return tileUrlTemplate
+            .replace("{z}", level.toString())
+            .replace("{x}", x.toString())
+            .replace("{y}", y.toString())
+            .replace("{layer}", effectiveLayer);
+        }
         return `${API_BASE}/api/v1/cases/${caseId}/tiles/${effectiveLayer}/${level}/${x}_${y}.png`;
       }
     };

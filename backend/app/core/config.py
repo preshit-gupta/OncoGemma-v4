@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     GCS_RAW_BUCKET: str = os.getenv("GCS_RAW_BUCKET", "oncogemma-dev-raw")
     GCS_PYRAMIDS_BUCKET: str = os.getenv("GCS_PYRAMIDS_BUCKET", "oncogemma-dev-pyramids")
     GCS_ARTIFACTS_BUCKET: str = os.getenv("GCS_ARTIFACTS_BUCKET", "oncogemma-dev-artifacts")
+    CDN_BASE_URL: str | None = os.getenv("CDN_BASE_URL", None) # e.g. "https://cdn.oncogemma.com" or "https://storage.googleapis.com"
     STORAGE_EMULATOR_HOST: str | None = os.getenv("STORAGE_EMULATOR_HOST", None)
     
     # Auth

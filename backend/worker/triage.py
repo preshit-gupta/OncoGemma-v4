@@ -20,7 +20,7 @@ from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.gcs import get_gcs_client, get_local_cache_dir
+from app.core.gcs import get_gcs_client, get_local_cache_dir, get_gcs_artifact_direct_url, upload_directory_to_gcs_and_purge
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
@@ -375,12 +375,80 @@ def run_triage(stage_execution: StageExecution, session: Session) -> tuple[str, 
     prob_grid_path = os.path.join(artifacts_case_dir, "prob_grid.npy")
     np.save(prob_grid_path, prob_grid)
 
+    # Pre-render 10x microscopic patch preview thumbnails for candidate hotspots
+    patches_dir = os.path.join(artifacts_case_dir, "patches")
+    os.makedirs(patches_dir, exist_ok=True)
+    
+    os_slide = None
+    try:
+        import openslide
+        raw_candidates = [os.path.join(raw_case_dir, f) for f in os.listdir(raw_case_dir) if f.endswith((".svs", ".ndpi", ".tif", ".tiff"))]
+        if raw_candidates:
+            os_slide = openslide.OpenSlide(raw_candidates[0])
+    except Exception as se:
+        print(f"[Triage Worker Note] OpenSlide patch load note: {se}")
+
+    stain_normalizer = None
+    try:
+        stain_json_path = os.path.join(cache_dir, settings.GCS_ARTIFACTS_BUCKET, "cases", str(case_id), "preprocess", "stain_params.json")
+        if os.path.exists(stain_json_path):
+            with open(stain_json_path) as sf:
+                stain_p = json.load(sf)
+            from pipeline.stain import PureNumpyMacenkoNormalizer
+            norm_obj = PureNumpyMacenkoNormalizer()
+            norm_obj.stain_matrix_target = np.array(stain_p["stain_matrix"])
+            norm_obj.max_conc_target = np.array(stain_p["max_concentrations"])
+            stain_normalizer = norm_obj
+    except Exception as ne:
+        print(f"[Triage Worker Note] Stain normalizer note: {ne}")
+
+    mpp_x = float(getattr(slide_obj, "mpp_x", 0.25) or 0.25)
+    mpp_y = float(getattr(slide_obj, "mpp_y", 0.25) or 0.25)
+
+    for hs in hotspots:
+        hs_id = hs["id"]
+        poly = np.array(hs["polygon_um"])
+        cx_um = float(poly[:, 0].mean())
+        cy_um = float(poly[:, 1].mean())
+        field_um = 512.0
+        crop_w_px = int(round(field_um / mpp_x))
+        crop_h_px = int(round(field_um / mpp_y))
+        cx_px = int(cx_um / mpp_x)
+        cy_px = int(cy_um / mpp_y)
+
+        patch_img = None
+        if os_slide:
+            dim_w, dim_h = os_slide.dimensions
+            x0 = max(0, min(dim_w - crop_w_px, cx_px - crop_w_px // 2))
+            y0 = max(0, min(dim_h - crop_h_px, cy_px - crop_h_px // 2))
+            patch_img = os_slide.read_region((x0, y0), 0, (crop_w_px, crop_h_px)).convert("RGB")
+            if stain_normalizer:
+                try:
+                    norm_arr = stain_normalizer.transform(np.array(patch_img))
+                    patch_img = Image.fromarray(norm_arr)
+                except Exception:
+                    pass
+        else:
+            patch_img = Image.new("RGB", (crop_w_px, crop_h_px), (230, 200, 220))
+
+        patch_img = patch_img.resize((512, 512), Image.Resampling.BILINEAR)
+        patch_filename = f"{hs_id}_thumb.png"
+        patch_local_path = os.path.join(patches_dir, patch_filename)
+        patch_img.save(patch_local_path, "PNG")
+
+        hs["thumbnail_uri"] = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/patches/{patch_filename}"
+        hs["thumbnail_url"] = get_gcs_artifact_direct_url(f"{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/patches/{patch_filename}")
+
+    if os_slide and hasattr(os_slide, "close"):
+        os_slide.close()
+
     wall_time_s = round(time.time() - start_time, 2)
     unit_price = pricing_cfg.get("path_foundation", {}).get("unit_price_per_1k_patches", 0.005)
     estimated_usd = round((endpoint_calls_made / 1000.0) * unit_price, 4)
 
     output_result = {
         "heatmap_png_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/heatmap_triage.png",
+        "heatmap_direct_url": get_gcs_artifact_direct_url(f"{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/heatmap_triage.png"),
         "prob_grid_uri": f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/prob_grid.npy",
         "grid": {
             "origin_um": list(grid_origin_um),
@@ -407,7 +475,7 @@ def run_triage(stage_execution: StageExecution, session: Session) -> tuple[str, 
 
     output_ref = f"gs://{settings.GCS_ARTIFACTS_BUCKET}/cases/{case_id}/triage/output.json"
 
-    # Upload triage output artifacts directly to Real GCP Storage
+    # Upload triage output artifacts directory directly to GCS
     try:
         client = get_gcs_client()
         bucket = client.bucket(settings.GCS_ARTIFACTS_BUCKET)
@@ -419,9 +487,16 @@ def run_triage(stage_execution: StageExecution, session: Session) -> tuple[str, 
             
         # Upload Viridis PNG heatmap
         if os.path.exists(heatmap_png_path):
-            blob_heatmap = bucket.blob(f"cases/{case_id}/triage/heatmap.png")
+            blob_heatmap = bucket.blob(f"cases/{case_id}/triage/heatmap_triage.png")
             if hasattr(blob_heatmap, "upload_from_filename"):
                 blob_heatmap.upload_from_filename(heatmap_png_path, content_type="image/png", timeout=10)
+
+        # Upload patch thumbnails
+        for hs_file in os.listdir(patches_dir):
+            if hs_file.endswith(".png"):
+                p_blob = bucket.blob(f"cases/{case_id}/triage/patches/{hs_file}")
+                if hasattr(p_blob, "upload_from_filename"):
+                    p_blob.upload_from_filename(os.path.join(patches_dir, hs_file), content_type="image/png", timeout=10)
     except Exception as ge:
         print(f"[Triage Worker Note] Real GCP cloud artifact upload note: {ge}")
 
