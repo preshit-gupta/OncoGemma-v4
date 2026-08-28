@@ -109,14 +109,17 @@ class MedGemmaClient:
         """
         Execute prediction call against Google Cloud Vertex AI endpoint.
         """
-        if settings.USE_MOCK_VERTEX_AI or not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            # Check if real vertex ai credentials or mock
+        if settings.USE_MOCK_VERTEX_AI:
             return self._mock_fallback_response(prompt)
             
         try:
             from google.cloud import aiplatform
             aiplatform.init(project=self.project, location=self.location)
-            endpoint = aiplatform.Endpoint(self.endpoint_id)
+            endpoint = aiplatform.Endpoint(
+                endpoint_name=self.endpoint_id,
+                project=self.project,
+                location=self.location
+            )
             
             instances = [{
                 "prompt": prompt,
@@ -125,17 +128,32 @@ class MedGemmaClient:
             }]
             
             # Run in thread pool to avoid blocking async event loop
-            response = await asyncio.to_thread(endpoint.predict, instances=instances)
-            predictions = response.predictions
-            if predictions and len(predictions) > 0:
-                first_pred = predictions[0]
-                if isinstance(first_pred, dict):
-                    return first_pred.get("content", str(first_pred))
-                return str(first_pred)
+            try:
+                response = await asyncio.to_thread(endpoint.predict, instances=instances)
+                predictions = response.predictions
+                if predictions and len(predictions) > 0:
+                    first_pred = predictions[0]
+                    if isinstance(first_pred, dict):
+                        return first_pred.get("content", str(first_pred.get("text", first_pred)))
+                    return str(first_pred)
+            except Exception:
+                # Try raw_predict format if predict failed
+                body_dict = {"instances": instances}
+                body_bytes = json.dumps(body_dict).encode("utf-8")
+                raw_resp = await asyncio.to_thread(
+                    endpoint.raw_predict,
+                    body=body_bytes,
+                    headers={"Content-Type": "application/json"}
+                )
+                resp_json = raw_resp.json()
+                preds = resp_json.get("predictions", [])
+                if preds and len(preds) > 0:
+                    return json.dumps(preds[0])
+                    
             return "{}"
         except Exception as e:
-            # If vertex AI endpoint is unreachable during testing, fallback gracefully
-            print(f"[MedGemma Vertex AI Warning] Call failed ({e}). Using deterministic rule fallback.")
+            # Fallback gracefully with clear log
+            print(f"[MedGemma Vertex AI Note] Live endpoint call failed ({e}). Using deterministic fallback.")
             return self._mock_fallback_response(prompt)
 
     def _mock_fallback_response(self, prompt: str) -> str:

@@ -1,7 +1,12 @@
+import os
+import sys
 import time
 import uuid
 import traceback
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
