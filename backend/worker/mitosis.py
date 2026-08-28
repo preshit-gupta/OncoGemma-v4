@@ -77,18 +77,36 @@ def find_slide_file(case_id: str, slide_id: str, local_path: Optional[str] = Non
     return None
 
 
-def run_mitosis(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str, str]]:
+def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
     """
     Executes Stage 4 (Mitosis Detection & Virtual HPF Selection).
     """
-    case_id = str(stage_exec.case_id)
+    if hasattr(stage_exec, "case_id"):
+        raw_case_id = stage_exec.case_id
+    elif hasattr(stage_exec, "id"):
+        raw_case_id = stage_exec.id
+    else:
+        raw_case_id = stage_exec
+
+    case_id = str(raw_case_id)
     print(f"[Worker:Mitosis] Starting Stage 4 for case {case_id}...")
 
-    case_obj = db.get(Case, stage_exec.case_id)
+    case_obj = None
+    if isinstance(stage_exec, Case):
+        case_obj = stage_exec
+    else:
+        case_obj = db.get(Case, raw_case_id)
+        if not case_obj:
+            import uuid
+            try:
+                case_obj = db.get(Case, uuid.UUID(case_id))
+            except Exception:
+                pass
+
     if not case_obj:
         raise ValueError(f"Case {case_id} not found in database.")
 
-    stmt = select(Slide).where(Slide.case_id == stage_exec.case_id).limit(1)
+    stmt = select(Slide).where(Slide.case_id == case_obj.id).limit(1)
     slide_obj = db.scalars(stmt).first()
     if not slide_obj:
         raise ValueError(f"No slide found for case {case_id}")
@@ -116,7 +134,7 @@ def run_mitosis(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
     # Fetch confirmed hotspots from DB or triage artifact
     hotspot_rows = db.scalars(
         select(Hotspot).where(
-            Hotspot.case_id == stage_exec.case_id,
+            Hotspot.case_id == case_obj.id,
             Hotspot.excluded == False
         )
     ).all()
@@ -331,13 +349,13 @@ def run_mitosis(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
     )
 
     # Persist to Database (detections & hpf_sites tables)
-    db.execute(delete(Detection).where(Detection.case_id == stage_exec.case_id))
-    db.execute(delete(HpfSite).where(HpfSite.case_id == stage_exec.case_id))
+    db.execute(delete(Detection).where(Detection.case_id == case_obj.id))
+    db.execute(delete(HpfSite).where(HpfSite.case_id == case_obj.id))
 
     for cand in candidates:
         det_row = Detection(
             id=cand["id"],
-            case_id=stage_exec.case_id,
+            case_id=case_obj.id,
             hotspot_id=cand.get("hotspot_id"),
             centroid_um=cand["centroid_um"],
             det_conf=cand.get("det_conf"),
@@ -351,7 +369,7 @@ def run_mitosis(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
 
     for hpf in hpfs:
         hpf_row = HpfSite(
-            case_id=stage_exec.case_id,
+            case_id=case_obj.id,
             seq=hpf["seq"],
             center_um=hpf["center_um"],
             radius_um=hpf["radius_um"],
