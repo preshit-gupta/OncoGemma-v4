@@ -18,6 +18,11 @@ const TriageViewer = dynamic(
   { ssr: false }
 );
 
+const MitosisViewer = dynamic(
+  () => import("@/components/viewer/MitosisViewer").then((mod) => mod.MitosisViewer),
+  { ssr: false }
+);
+
 export default function CaseWorkspacePage({ params }: { params: { id: string } }) {
   const caseId = params.id;
 
@@ -291,6 +296,16 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 </button>
               </div>
             </div>
+          ) : activeStage === "mitosis" ? (
+            <MitosisViewer
+              caseId={caseId}
+              mppX={slide?.mpp_x || 0.25}
+              mppY={slide?.mpp_y || slide?.mpp_x || 0.25}
+              imageWidthPx={slide?.width_px || 2048}
+              imageHeightPx={slide?.height_px || 2048}
+              onRefreshCase={loadData}
+              tileUrlTemplate={caseDetail?.tile_url_template}
+            />
           ) : activeStage === "triage" ? (
             <TriageViewer
               caseId={caseId}

@@ -34,6 +34,7 @@ export interface CaseDetail extends Case {
     started_at?: string;
     completed_at?: string;
   }>;
+  tile_url_template?: string | null;
 }
 
 export async function fetchCases(): Promise<Case[]> {
@@ -140,3 +141,153 @@ export async function fetchCaseDetail(caseId: string): Promise<CaseDetail> {
   if (!res.ok) throw new Error("Failed to fetch case detail");
   return res.json();
 }
+
+// Stage 4: Mitosis Detection & Virtual HPFs Interfaces
+export interface MitosisCandidate {
+  id: string;
+  hotspot_id?: string | null;
+  centroid_um: [number, number];
+  det_conf?: number | null;
+  ver_conf?: number | null;
+  label: "mitosis" | "not_mitosis" | "unreviewed";
+  label_source: "model" | "pathologist" | "pathologist_bulk";
+  crop_uri?: string | null;
+  crop_orig_uri?: string | null;
+}
+
+export interface VirtualHpfSite {
+  seq: number;
+  center_um: [number, number];
+  radius_um: number;
+  count: number;
+  source?: string;
+}
+
+export interface MitoticScoreSummary {
+  count_total: number;
+  n_hpf: number;
+  area_mm2: number;
+  per_mm2: number;
+  classic_per_10hpf: number;
+  mitotic_score: number; // 1, 2, or 3
+}
+
+export interface MitosisStageData {
+  case_id: string;
+  stage_execution_id: string;
+  status: string;
+  candidates: MitosisCandidate[];
+  hpfs: VirtualHpfSite[];
+  summary: MitoticScoreSummary;
+  model_versions: Record<string, string>;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+}
+
+export async function fetchMitosisStageData(caseId: string): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/${caseId}`, {
+    headers: { "X-User-Role": "pathologist" }
+  });
+  if (!res.ok) throw new Error(`Failed to fetch mitosis stage data (Status: ${res.status})`);
+  return res.json();
+}
+
+export async function recomputeMitosis(payload: {
+  case_id: string;
+  candidate_labels?: Record<string, string>;
+  hpfs?: Array<{ seq: number; center_um: [number, number]; radius_um?: number; source?: string }>;
+  audit_toggle?: { id: string; from: string; to: string };
+}): Promise<{ case_id: string; hpfs: VirtualHpfSite[]; summary: MitoticScoreSummary }> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/recompute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error("Failed to recompute mitosis score");
+  return res.json();
+}
+
+export async function addPathologistMitosis(
+  caseId: string,
+  centroidUm: [number, number],
+  label: string = "mitosis",
+  reviewedBy: string = "pathologist_01"
+): Promise<{ status: string; candidate: MitosisCandidate }> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/add_candidate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      centroid_um: centroidUm,
+      label,
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) throw new Error("Failed to add candidate mitosis");
+  return res.json();
+}
+
+export async function bulkRejectUnreviewedMitosis(
+  caseId: string,
+  reviewedBy: string = "pathologist_01"
+): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/bulk_action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      action: "reject_remaining_unreviewed",
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) throw new Error("Failed to bulk reject unreviewed candidates");
+  return res.json();
+}
+
+export async function replaceMitosisHpfs(caseId: string): Promise<MitosisStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/re_place_hpfs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      action: "re_place_hpfs"
+    })
+  });
+  if (!res.ok) throw new Error("Failed to re-place HPF sites");
+  return res.json();
+}
+
+export async function confirmMitosisStage(
+  caseId: string,
+  reviewedBy: string = "pathologist_01"
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/mitosis/confirm`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify({
+      case_id: caseId,
+      reviewed_by: reviewedBy
+    })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to confirm mitosis stage");
+  }
+  return res.json();
+}
+

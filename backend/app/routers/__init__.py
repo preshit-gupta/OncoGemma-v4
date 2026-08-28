@@ -2,5 +2,12 @@ from app.routers.cases import router as cases_router
 from app.routers.tiles import router as tiles_router
 from app.routers.audit import router as audit_router
 from app.routers.triage import router as triage_router
+from app.routers.mitosis import router as mitosis_router
 
-__all__ = ["cases_router", "tiles_router", "audit_router", "triage_router"]
+__all__ = [
+    "cases_router",
+    "tiles_router",
+    "audit_router",
+    "triage_router",
+    "mitosis_router"
+]

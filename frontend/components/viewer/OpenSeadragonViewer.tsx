@@ -15,8 +15,17 @@ export interface ViewerHotspot {
   excluded?: boolean;
 }
 
+export interface ViewerDetectionMarker {
+  id: string;
+  x_um: number;
+  y_um: number;
+  label: "mitosis" | "not_mitosis" | "unreviewed";
+  conf?: number | null;
+  in_hpf?: boolean;
+}
+
 interface OpenSeadragonViewerProps {
-  caseId: string;
+  caseId?: string;
   mppX?: number;
   mppY?: number;
   imageWidthPx?: number;
@@ -29,15 +38,22 @@ interface OpenSeadragonViewerProps {
   hotspots?: ViewerHotspot[];
   selectedHotspotId?: string | null;
   onSelectHotspot?: (id: string) => void;
+  detectionMarkers?: ViewerDetectionMarker[];
+  showCandidateMarkers?: boolean;
+  selectedCandidateId?: string | null;
+  onSelectCandidate?: (id: string) => void;
+  tileUrlTemplate?: string | null;
+  focusPointUm?: [number, number] | null;
+  focusMag?: number;
   isAddingRoiMode?: boolean;
   onAddRoiClick?: (x_um: number, y_um: number) => void;
-  tileUrlTemplate?: string | null;
+  className?: string;
 }
 
 const ZOOM_PRESETS = [2.5, 5, 10, 20, 40];
 
 export function OpenSeadragonViewer({
-  caseId,
+  caseId = "",
   mppX = 0.25,
   mppY = 0.25,
   imageWidthPx = 2048,
@@ -50,12 +66,19 @@ export function OpenSeadragonViewer({
   hotspots = [],
   selectedHotspotId = null,
   onSelectHotspot,
+  detectionMarkers = [],
+  showCandidateMarkers = true,
+  selectedCandidateId = null,
+  onSelectCandidate,
   isAddingRoiMode = false,
   onAddRoiClick,
-  tileUrlTemplate = null
+  tileUrlTemplate = null,
+  focusPointUm = null,
+  focusMag = 20.0,
+  className
 }: OpenSeadragonViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);
+  const viewerRef = useRef<any>(null);
   const [scaleLengthUm, setScaleLengthUm] = useState<number>(100);
   const [scalebarWidthPx, setScalebarWidthPx] = useState<number>(120);
   const [currentMag, setCurrentMag] = useState<number>(1.0);
@@ -65,6 +88,9 @@ export function OpenSeadragonViewer({
   const [activeLayer, setActiveLayer] = useState<"orig" | "norm">(layer);
   const [svgPolygons, setSvgPolygons] = useState<
     Array<{ id: string; points: string; center: { x: number; y: number }; excluded?: boolean }>
+  >([]);
+  const [svgMarkers, setSvgMarkers] = useState<
+    Array<{ id: string; x: number; y: number; label: string; conf?: number | null; in_hpf?: boolean }>
   >([]);
   const [focusedHotspotId, setFocusedHotspotId] = useState<string | null>(null);
 
@@ -82,6 +108,31 @@ export function OpenSeadragonViewer({
   useEffect(() => {
     hotspotsRef.current = hotspots;
   }, [hotspots]);
+
+  const detectionMarkersRef = useRef(detectionMarkers);
+  useEffect(() => {
+    detectionMarkersRef.current = detectionMarkers;
+    updateMarkers(detectionMarkers);
+  }, [detectionMarkers]);
+
+  // Programmatic smooth camera fly-to when focusPointUm changes
+  useEffect(() => {
+    if (!focusPointUm || !viewerRef.current?.viewport) return;
+    const effectiveMppX = mppX || 0.25;
+    const effectiveMppY = mppY || effectiveMppX;
+    const imgX = focusPointUm[0] / effectiveMppX;
+    const imgY = focusPointUm[1] / effectiveMppY;
+    const vpPoint = viewerRef.current.viewport.imageToViewportCoordinates(new (OpenSeadragon as any).Point(imgX, imgY));
+
+    const targetMag = focusMag || 25.0;
+    const baseMpp = 0.25;
+    const imageZoom = (targetMag * effectiveMppX) / (40.0 * baseMpp);
+    const vpZoom = viewerRef.current.viewport.imageToViewportZoom(imageZoom);
+
+    viewerRef.current.viewport.panTo(vpPoint, false);
+    viewerRef.current.viewport.zoomTo(vpZoom, vpPoint, false);
+    viewerRef.current.viewport.applyConstraints();
+  }, [focusPointUm, focusMag, mppX, mppY]);
 
   const isNormFallbackToOrig = activeLayer === "norm" && currentMag > 10.0;
 
@@ -112,7 +163,36 @@ export function OpenSeadragonViewer({
     }
   };
 
-  const updatePolygons = (items?: HotspotItem[]) => {
+  const updateMarkers = (markers?: ViewerDetectionMarker[]) => {
+    const viewer = viewerRef.current;
+    if (!viewer?.viewport) return;
+    const currentMarkers = markers || detectionMarkersRef.current || detectionMarkers || [];
+    if (!currentMarkers.length) {
+      setSvgMarkers([]);
+      return;
+    }
+
+    const effectiveMppX = mppX || 0.25;
+    const effectiveMppY = mppY || effectiveMppX;
+
+    const pts = currentMarkers.map((m) => {
+      const imgX = m.x_um / effectiveMppX;
+      const imgY = m.y_um / effectiveMppY;
+      const vpPoint = viewer.viewport.imageToViewportCoordinates(new (OpenSeadragon as any).Point(imgX, imgY));
+      const pixelPoint = viewer.viewport.pixelFromPoint(vpPoint, true);
+      return {
+        id: m.id,
+        x: pixelPoint.x,
+        y: pixelPoint.y,
+        label: m.label,
+        conf: m.conf,
+        in_hpf: m.in_hpf
+      };
+    });
+    setSvgMarkers(pts);
+  };
+
+  const updatePolygons = (items?: ViewerHotspot[]) => {
     const viewer = viewerRef.current;
     if (!viewer?.viewport) return;
     const currentHotspots = items || hotspotsRef.current || hotspots || [];
@@ -132,7 +212,7 @@ export function OpenSeadragonViewer({
       for (const pt of (hs.polygon_um || [])) {
         const imgX = pt[0] / effectiveMppX;
         const imgY = pt[1] / effectiveMppY;
-        const vpPoint = viewer.viewport.imageToViewportCoordinates(new OpenSeadragon.Point(imgX, imgY));
+        const vpPoint = viewer.viewport.imageToViewportCoordinates(new (OpenSeadragon as any).Point(imgX, imgY));
         const pixelPoint = viewer.viewport.pixelFromPoint(vpPoint, true);
         pts.push({ x: pixelPoint.x, y: pixelPoint.y });
         sumX += pixelPoint.x;
@@ -164,7 +244,7 @@ export function OpenSeadragonViewer({
     const maxDim = Math.max(imageWidthPx, imageHeightPx);
     const maxLevel = Math.ceil(Math.log2(maxDim)) || 11;
 
-    const tileSource: OpenSeadragon.TileSourceOptions = {
+    const tileSource: any = {
       width: imageWidthPx,
       height: imageHeightPx,
       tileSize: 256,
@@ -213,6 +293,7 @@ export function OpenSeadragonViewer({
     const onViewportChange = () => {
       updateScalebar();
       updatePolygons();
+      updateMarkers();
     };
 
     viewer.addHandler("open", () => {
@@ -487,49 +568,6 @@ export function OpenSeadragonViewer({
                   onClick={() => onSelectHotspot && onSelectHotspot(poly.id)}
                 />
 
-                {/* High-Visibility Animated Location Beacon on "Locate" */}
-                {isFocused && (
-                  <g transform={`translate(${poly.center.x}, ${poly.center.y})`} className="pointer-events-none">
-                    {/* Expanding Radar Rings */}
-                    <circle
-                      r="65"
-                      fill="rgba(56, 189, 248, 0.18)"
-                      stroke="#38bdf8"
-                      strokeWidth="3"
-                      className="animate-ping"
-                      style={{ animationDuration: "1.6s" }}
-                    />
-                    <circle
-                      r="42"
-                      fill="rgba(14, 165, 233, 0.25)"
-                      stroke="#06b6d4"
-                      strokeWidth="2.5"
-                      className="animate-pulse"
-                    />
-                    <circle
-                      r="16"
-                      fill="#0284c7"
-                      stroke="#ffffff"
-                      strokeWidth="2.5"
-                    />
-                    {/* Concentric Rotating Reticle */}
-                    <circle
-                      r="28"
-                      fill="none"
-                      stroke="#ffffff"
-                      strokeWidth="1.5"
-                      strokeDasharray="4,4"
-                      className="animate-spin"
-                      style={{ animationDuration: "6s" }}
-                    />
-                    {/* Radar Crosshairs */}
-                    <line x1="-50" y1="0" x2="-20" y2="0" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
-                    <line x1="20" y1="0" x2="50" y2="0" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
-                    <line x1="0" y1="-50" x2="0" y2="-20" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
-                    <line x1="0" y1="20" x2="0" y2="50" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
-                  </g>
-                )}
-
                 {/* Floating Numbered Pin / Badge */}
                 <g transform={`translate(${poly.center.x}, ${poly.center.y})`}>
                   <rect
@@ -555,6 +593,47 @@ export function OpenSeadragonViewer({
                     {isFocused ? `🎯 ${poly.id}` : poly.id}
                   </text>
                 </g>
+              </g>
+            );
+          })}
+
+          {/* Candidate Detection Markers (Zoom-Adaptive & HPF Scoped) */}
+          {showCandidateMarkers && svgMarkers.map((m) => {
+            const isSelected = selectedCandidateId === m.id || selectedHotspotId === `cand_${m.id}`;
+            // If zoomed out (< 15x), only show if inside an active HPF or explicitly selected
+            if (currentMag < 15.0 && !m.in_hpf && !isSelected) return null;
+
+            const color = m.label === "mitosis" ? "#10b981" : (m.label === "not_mitosis" ? "#94a3b8" : "#f59e0b");
+            const r = isSelected ? 8 : (currentMag >= 25.0 ? 5.5 : 4.0);
+
+            return (
+              <g
+                key={`marker-${m.id}`}
+                className="cursor-pointer pointer-events-auto transition-transform hover:scale-125"
+                onClick={() => onSelectCandidate && onSelectCandidate(m.id)}
+              >
+                <circle
+                  cx={m.x}
+                  cy={m.y}
+                  r={r}
+                  fill={color}
+                  stroke={isSelected ? "#38bdf8" : "#0f172a"}
+                  strokeWidth={isSelected ? 3 : 1.5}
+                  className={isSelected ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.9)] animate-pulse" : ""}
+                />
+                {isSelected && (
+                  <circle
+                    cx={m.x}
+                    cy={m.y}
+                    r={r + 6}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth="2"
+                    strokeDasharray="3 3"
+                    className="animate-spin"
+                    style={{ animationDuration: "4s" }}
+                  />
+                )}
               </g>
             );
           })}

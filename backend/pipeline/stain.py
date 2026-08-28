@@ -116,6 +116,8 @@ class PureNumpyMacenkoNormalizer:
 
         return rgb_norm
 
+MacenkoNormalizer = PureNumpyMacenkoNormalizer
+
 def get_macenko_normalizer_class():
     """Import tiatoolbox MacenkoNormalizer if available, else return PureNumpyMacenkoNormalizer."""
     try:

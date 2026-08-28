@@ -32,6 +32,7 @@ node_modules/
 out/
 build/
 .next/standalone
+*.tsbuildinfo
 
 # Local / OS / IDE
 .DS_Store

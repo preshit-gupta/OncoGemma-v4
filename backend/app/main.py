@@ -13,7 +13,7 @@ if sys.platform == "win32":
 from app.core.config import settings
 from app.core.gcs import ensure_buckets_exist
 from app.core.db import Base, engine
-from app.routers import cases_router, tiles_router, audit_router, triage_router
+from app.routers import cases_router, tiles_router, audit_router, triage_router, mitosis_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="OncoGemma v4 API",
     description="Breast Cancer Diagnostic Copilot API — Nottingham Grading & CAP Dossier Workflow",
-    version="4.2.0",
+    version="4.3.0",
     lifespan=lifespan
 )
 
@@ -42,6 +42,7 @@ app.include_router(cases_router)
 app.include_router(tiles_router)
 app.include_router(audit_router)
 app.include_router(triage_router)
+app.include_router(mitosis_router)
 
 @app.get("/healthz")
 def health_check():

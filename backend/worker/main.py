@@ -11,12 +11,14 @@ from worker.ingest import run_ingest
 from worker.preprocess import run_preprocess
 from worker.qc import run_qc
 from worker.triage import run_triage
+from worker.mitosis import run_mitosis
 
 HANDLERS = {
     "ingest": run_ingest,
     "preprocess": run_preprocess,
     "qc": run_qc,
-    "triage": run_triage
+    "triage": run_triage,
+    "mitosis": run_mitosis
 }
 
 def reset_stuck_running_stages():

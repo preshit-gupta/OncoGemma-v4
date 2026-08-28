@@ -1,0 +1,41 @@
+# OncoGemma Stage v4.3 - Mitosis Detection, Virtual HPFs & Scoring Configuration
+
+detector:
+  model_name: "yolov8_mitosis_midog22"
+  weights_path: "models/detector/yolov8_midog.pt"
+  tile_size_px: 1024
+  mpp: 0.25 # 40x magnification (~0.25 um/pixel)
+  tile_size_um: 256.0 # 1024 * 0.25
+  stride_px: 960 # 64 px overlap across tiles
+  overlap_px: 64
+  det_threshold: 0.35 # High-recall candidate sweep threshold (recall ~0.88-0.90 on MIDOG++)
+  review_threshold: 0.50 # Gating threshold for pathologist confirmation
+  nms_radius_um: 7.5 # Cross-tile greedy NMS suppression radius (mitotic figure ~10-15 um)
+  batch_size: 16
+  fp16: true
+
+verifier:
+  enabled: true
+  model_name: "hovernet_mitosis_v1"
+  weights_path: "models/verifier/hovernet_mitosis.pt"
+  crop_size_px: 128
+  crop_size_um: 32.0 # 128 * 0.25
+  ver_threshold: 0.50
+
+hpf:
+  radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
+  count: 10 # 10 non-overlapping fields (cumulative area ≈ 2.157 mm²)
+  density_grid_res_um: 16.0 # Spatial density sampling resolution
+  min_separation_um: 524.0 # 2 * radius_um (strict non-overlap)
+  relaxed_min_separation_um: 393.0 # 1.5 * radius_um (overlap relaxation for constrained tumor margins)
+
+scoring:
+  basis: "per_mm2"
+  thresholds:
+    score2_min: 3.65 # mitoses/mm² (classic 10-19 / 2.74 mm²)
+    score3_min: 7.30 # mitoses/mm² (classic >=20 / 2.74 mm²)
+  display_classic_equivalent: true
+  classic_area_mm2: 2.74
+
+mock:
+  use_mock_detector: false

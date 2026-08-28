@@ -33,6 +33,7 @@ interface HotspotItem {
   source: string;
   excluded: boolean;
   exclude_reason?: string | null;
+  thumbnail_url?: string | null;
 }
 
 interface TriageData {
@@ -40,6 +41,7 @@ interface TriageData {
   stage_execution_id: string;
   status: string;
   heatmap_png_uri: string | null;
+  heatmap_direct_url?: string | null;
   prob_grid_uri: string | null;
   grid: {
     origin_um: number[];
