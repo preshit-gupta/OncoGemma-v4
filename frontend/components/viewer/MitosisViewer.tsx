@@ -863,27 +863,35 @@ export function MitosisViewer({
                 </div>
 
                 {/* Picture-in-Picture Macro Biopsy Minimap (Never lose position sense) */}
-                <div className="absolute bottom-6 left-6 bg-slate-900/95 backdrop-blur-md rounded-xl p-2 border border-slate-800 shadow-2xl flex flex-col gap-1.5 w-36">
-                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                    <span className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3 text-sky-400" /> Biopsy Location
+                <div className="absolute bottom-6 left-6 bg-slate-900/95 backdrop-blur-md rounded-xl p-2.5 border border-slate-800 shadow-2xl flex flex-col gap-1.5 w-40 select-none">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-300 uppercase tracking-wider">
+                    <span className="flex items-center gap-1.5 text-sky-400">
+                      <MapPin className="w-3.5 h-3.5" /> Biopsy Location
                     </span>
+                    <span className="text-slate-500 font-mono text-[9px]">Field #{activeHpfSeq}</span>
                   </div>
-                  <div className="relative w-full h-36 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center">
+                  <div className="relative w-full h-40 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center">
                     <img
                       src={wholeSlideThumbnailUrl}
                       alt="Biopsy overview"
                       className="w-full h-full object-contain pointer-events-none"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><rect width="100%" height="100%" fill="%230f172a"/><text x="50%" y="50%" fill="%2394a3b8" text-anchor="middle" font-size="10">Biopsy Core</text></svg>`;
+                      }}
                     />
                     {/* Active HPF Beacon on Minimap */}
                     {activeHpf && (
                       <div
-                        className="absolute w-3 h-3 rounded-full bg-sky-400 border-2 border-white shadow-[0_0_8px_#38bdf8] animate-ping"
+                        className="absolute transform -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                         style={{
-                          left: `${Math.min(90, Math.max(10, (activeHpf.center_um[0] / (imageWidthPx * mppX)) * 100))}%`,
-                          top: `${Math.min(90, Math.max(10, (activeHpf.center_um[1] / (imageHeightPx * mppY)) * 100))}%`
+                          left: `${Math.min(92, Math.max(8, (activeHpf.center_um[0] / ((data?.slide?.width_px || imageWidthPx) * (data?.slide?.mpp_x || mppX))) * 100))}%`,
+                          top: `${Math.min(92, Math.max(8, (activeHpf.center_um[1] / ((data?.slide?.height_px || imageHeightPx) * (data?.slide?.mpp_y || mppY))) * 100))}%`
                         }}
-                      />
+                      >
+                        <div className="w-4 h-4 rounded-full bg-emerald-400 border-2 border-white shadow-[0_0_12px_#10b981] animate-pulse flex items-center justify-center">
+                          <div className="w-1.5 h-1.5 rounded-full bg-slate-950" />
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>

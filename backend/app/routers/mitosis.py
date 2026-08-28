@@ -190,6 +190,15 @@ def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db)):
         radius_um=hpfs[0]["radius_um"] if hpfs else 262.0
     )
 
+    slide_stmt = select(Slide).where(Slide.case_id == case_id).limit(1)
+    slide_obj = db.scalars(slide_stmt).first()
+    slide_info = {
+        "width_px": slide_obj.width_px if slide_obj else 20000,
+        "height_px": slide_obj.height_px if slide_obj else 20000,
+        "mpp_x": float(slide_obj.mpp_x) if slide_obj and slide_obj.mpp_x else 0.25,
+        "mpp_y": float(slide_obj.mpp_y) if slide_obj and slide_obj.mpp_y else 0.25
+    }
+
     return {
         "case_id": case_id,
         "stage_execution_id": str(stage_exec.id),
@@ -197,6 +206,7 @@ def get_mitosis_stage_data(case_id: str, db: Session = Depends(get_db)):
         "candidates": candidates,
         "hpfs": hpfs,
         "summary": summary,
+        "slide": slide_info,
         "model_versions": stage_exec.model_versions or {"detector": "midog22_yolov8x@v1.0", "verifier": "hovernet_v1.2"},
         "reviewed_at": stage_exec.reviewed_at.isoformat() if stage_exec.reviewed_at else None,
         "reviewed_by": stage_exec.reviewed_by

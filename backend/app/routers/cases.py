@@ -2,7 +2,9 @@ import uuid
 import os
 import shutil
 import tempfile
+from io import BytesIO
 from datetime import datetime, timezone
+from PIL import Image
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -11,10 +13,12 @@ from app.core.db import get_db
 from app.core.auth import get_current_user, CurrentUser
 from app.core.config import settings
 from app.core.gcs import get_gcs_client, get_local_cache_dir, get_gcs_tile_template_url
+from app.core.openslide_lock import OPENSLIDE_GLOBAL_LOCK
 from app.models.case import Case
 from app.models.slide import Slide
 from app.models.stage_execution import StageExecution
 from app.models.audit import AuditEvent
+from worker.mitosis import find_slide_file
 from app.schemas.case import (
     CaseResponse,
     SlideUploadUrlRequest,
@@ -380,6 +384,38 @@ def finalize_slide_upload(
         "stage_execution_id": str(stage_exec.id)
     }
 
+@router.get("/{case_id}/thumbnail")
+def get_case_thumbnail(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a high-speed whole-slide macro thumbnail (e.g. 256x256) of the case biopsy.
+    """
+    stmt = select(Slide).where(Slide.case_id == case_id).limit(1)
+    slide_obj = db.scalars(stmt).first()
+    if not slide_obj:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    slide_file = find_slide_file(str(case_id), str(slide_obj.id), getattr(slide_obj, "local_path", None))
+    if not slide_file or not os.path.exists(slide_file):
+        raise HTTPException(status_code=404, detail="Slide file not found on disk")
+
+    try:
+        import openslide
+        with OPENSLIDE_GLOBAL_LOCK:
+            oslide = openslide.OpenSlide(slide_file)
+            thumb = oslide.get_thumbnail((256, 256)).convert("RGB")
+            oslide.close()
+    except Exception as e:
+        thumb = Image.new("RGB", (256, 256), color=(240, 225, 235))
+
+    buf = BytesIO()
+    thumb.save(buf, format="PNG")
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
 @router.get("/{case_id}", response_model=CaseDetailResponse)
 def get_case_detail(
     case_id: uuid.UUID,
@@ -440,3 +476,4 @@ def get_case_detail(
         tile_url_template=tile_template,
         cdn_base_url=settings.CDN_BASE_URL
     )
+

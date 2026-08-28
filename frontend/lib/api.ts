@@ -179,6 +179,7 @@ export interface MitosisStageData {
   candidates: MitosisCandidate[];
   hpfs: VirtualHpfSite[];
   summary: MitoticScoreSummary;
+  slide?: { width_px: number; height_px: number; mpp_x: number; mpp_y: number };
   model_versions: Record<string, string>;
   reviewed_at?: string | null;
   reviewed_by?: string | null;
