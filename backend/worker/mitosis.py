@@ -124,9 +124,10 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
 
     tile_size_px = det_cfg.get("tile_size_px", 1024)
     stride_px = det_cfg.get("stride_px", 960)
-    det_thresh = det_cfg.get("det_threshold", 0.35)
-    review_thresh = det_cfg.get("review_threshold", 0.50)
-    nms_radius_um = det_cfg.get("nms_radius_um", 7.5)
+    det_thresh = float(det_cfg.get("det_threshold", 0.35))
+    review_thresh = float(det_cfg.get("review_threshold", 0.40))
+    ver_thresh = float(ver_cfg.get("ver_threshold", 0.65))
+    nms_radius_um = float(det_cfg.get("nms_radius_um", 7.5))
     crop_size_px = ver_cfg.get("crop_size_px", 128)
     radius_um = float(hpf_cfg.get("radius_um", 262.0))
     hpf_count = int(hpf_cfg.get("count", 10))
@@ -186,7 +187,7 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
 
     # Initialize detectors & verifiers
     detector = YoloMitosisDetector(conf_threshold=det_thresh)
-    verifier = HoVerNetMitosisVerifier(threshold=review_thresh)
+    verifier = HoVerNetMitosisVerifier(threshold=ver_thresh)
 
     # Open slide for region reading if slide file exists
     slide_file_path = find_slide_file(case_id, slide_id, getattr(slide_obj, "local_path", None))
@@ -285,10 +286,13 @@ def run_mitosis(stage_exec: Any, db: Session) -> Tuple[str, Dict[str, str]]:
         ver_conf, contour = verifier.verify(crop_rgb)
         cand["ver_conf"] = float(ver_conf)
 
-        # Assign initial label: mitosis if confirmed by verifier or detector, else unreviewed
-        if ver_conf >= review_thresh:
+        # Assign initial label:
+        # - Definite mitosis: ver_conf >= ver_thresh (>=0.65)
+        # - Borderline / unreviewed: review_thresh <= ver_conf < ver_thresh (0.40 - 0.65)
+        # - Rejected non-mitotic figure: ver_conf < review_thresh (<0.40, e.g. apoptotic body, lymphocyte, resting nucleus)
+        if ver_conf >= ver_thresh:
             cand["label"] = "mitosis"
-        elif cand["det_conf"] >= review_thresh:
+        elif ver_conf >= review_thresh or (cand["det_conf"] >= 0.70 and ver_conf >= 0.35):
             cand["label"] = "unreviewed"
         else:
             cand["label"] = "not_mitosis"

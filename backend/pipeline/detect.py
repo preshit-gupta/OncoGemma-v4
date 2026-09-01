@@ -70,8 +70,9 @@ class YoloMitosisDetector:
 
     def _detect_hyperchromatic_features(self, tile_rgb: np.ndarray) -> List[Tuple[float, float, float]]:
         """
-        First-principles hematoxylin optical density & morphological feature filter.
-        Identifies dense condensed chromatin clusters with high recall.
+        First-principles hematoxylin optical density & morphological candidate sweep.
+        Sweeps 40x tile for dense condensed chromatin clusters using absolute OD thresholding
+        and connected component analysis.
         """
         h, w, _ = tile_rgb.shape
         if h < 32 or w < 32:
@@ -80,34 +81,59 @@ class YoloMitosisDetector:
         # Convert to optical density
         rgb_norm = np.maximum(tile_rgb.astype(np.float32), 1.0) / 255.0
         od = -np.log(rgb_norm)
-        # Hematoxylin OD is predominantly captured by (OD_R - 0.2*OD_G)
+        # Hematoxylin OD component
         h_od = od[:, :, 0] - 0.15 * od[:, :, 1] - 0.15 * od[:, :, 2]
-        
-        # Threshold top 0.2% highest chromatin density
-        thresh = np.percentile(h_od, 99.6)
-        if thresh < 0.2:
-            return []
 
-        # Morphological peak extraction on a 48px grid
-        stride = 48
-        candidates = []
-        for y in range(stride // 2, h - stride // 2, stride):
-            for x in range(stride // 2, w - stride // 2, stride):
-                patch = h_od[y - stride // 2 : y + stride // 2, x - stride // 2 : x + stride // 2]
-                max_val = np.max(patch)
-                if max_val > thresh:
-                    # Calculate local centroid
-                    py, px = np.unravel_index(np.argmax(patch), patch.shape)
-                    actual_x = float(x - stride // 2 + px)
-                    actual_y = float(y - stride // 2 + py)
-                    
-                    # Compute confidence based on optical density contrast
-                    conf = min(0.98, max(self.conf_threshold, float(0.50 + (max_val - thresh) * 1.8)))
-                    candidates.append((actual_x, actual_y, conf))
+        # Absolute threshold for condensed chromatin (mitotic chromosomes exhibit H_OD >= 0.85)
+        chromatin_thresh = 0.85
+        dense_mask = (h_od > chromatin_thresh).astype(np.uint8) * 255
 
-        # Sort and return top candidates on tile
-        candidates.sort(key=lambda c: c[2], reverse=True)
-        return candidates[:6]
+        try:
+            import cv2
+            # Find connected components of dense chromatin
+            cnts, _ = cv2.findContours(dense_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            candidates = []
+            for cnt in cnts:
+                area = float(cv2.contourArea(cnt))
+                # Mitotic chromatin clusters typically occupy 200 to 3500 pixels (5-18 um across)
+                if 200 <= area <= 3500:
+                    M = cv2.moments(cnt)
+                    if M["m00"] > 0:
+                        cx = float(M["m10"] / M["m00"])
+                        cy = float(M["m01"] / M["m00"])
+
+                        # Calculate local peak OD within contour
+                        mask_cnt = np.zeros((h, w), dtype=np.uint8)
+                        cv2.drawContours(mask_cnt, [cnt], -1, 255, -1)
+                        p95_od = float(np.percentile(h_od[mask_cnt > 0], 95))
+
+                        # Scale confidence based on chromatin condensation and cluster size
+                        conf = float(np.clip(
+                            0.35 + min(0.35, (p95_od - 0.40) * 0.30) + min(0.20, (area / 500.0) * 0.20),
+                            self.conf_threshold,
+                            0.95
+                        ))
+                        candidates.append((cx, cy, conf))
+
+            # Sort by confidence descending and return top candidate peaks
+            candidates.sort(key=lambda c: c[2], reverse=True)
+            return candidates[:6]
+        except ImportError:
+            # Fallback if OpenCV is not available
+            stride = 48
+            candidates = []
+            for y in range(stride // 2, h - stride // 2, stride):
+                for x in range(stride // 2, w - stride // 2, stride):
+                    patch = h_od[y - stride // 2 : y + stride // 2, x - stride // 2 : x + stride // 2]
+                    max_val = float(np.max(patch))
+                    if max_val > chromatin_thresh:
+                        py, px = np.unravel_index(np.argmax(patch), patch.shape)
+                        actual_x = float(x - stride // 2 + px)
+                        actual_y = float(y - stride // 2 + py)
+                        conf = float(np.clip(0.35 + (max_val - chromatin_thresh) * 0.4, self.conf_threshold, 0.90))
+                        candidates.append((actual_x, actual_y, conf))
+            candidates.sort(key=lambda c: c[2], reverse=True)
+            return candidates[:12]
 
 
 def apply_global_nms(

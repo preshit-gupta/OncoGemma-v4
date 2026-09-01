@@ -20,6 +20,7 @@ import {
   Check,
   RefreshCw,
   Eye,
+  EyeOff,
   AlertTriangle,
   ChevronRight,
   ChevronLeft,
@@ -269,8 +270,26 @@ export function MitosisViewer({
     });
   }, [candidates, activeHpf]);
 
-  // Step to Next Field or Finish
+  // Step to Next Field or Finish with Smart Auto-Reject for unreviewed candidates in active field
   const handleApproveFieldAndNext = () => {
+    // Auto-reject any unreviewed candidates remaining in the current active field
+    const unreviewedInField = activeFieldCandidates.filter(c => c.label === "unreviewed");
+    let currentCandidates = candidates;
+    if (unreviewedInField.length > 0) {
+      const unreviewedIds = new Set(unreviewedInField.map(c => c.id));
+      currentCandidates = candidates.map(c => {
+        if (unreviewedIds.has(c.id)) {
+          return { ...c, label: "not_mitosis" as const, label_source: "pathologist" as const };
+        }
+        return c;
+      });
+      setCandidates(currentCandidates);
+      const { updatedHpfs, newSummary } = computeClientScore(currentCandidates, hpfs);
+      setHpfs(updatedHpfs);
+      setSummary(newSummary);
+      syncWithServer(currentCandidates, updatedHpfs);
+    }
+
     setApprovedFields(prev => ({ ...prev, [activeHpfSeq]: true }));
     if (activeHpfSeq < (hpfs.length || 10)) {
       setActiveHpfSeq(activeHpfSeq + 1);
@@ -377,9 +396,17 @@ export function MitosisViewer({
               handleToggleCandidate(target.id, target.label === "not_mitosis" ? "unreviewed" : "not_mitosis");
             }
           }
+        } else if (e.key === "a" || e.key === "A") {
+          e.preventDefault();
+          setShowCandidateMarkers(prev => !prev);
         } else if (e.key === "Enter") {
           e.preventDefault();
           handleApproveFieldAndNext();
+        }
+      } else {
+        if (e.key === "a" || e.key === "A") {
+          e.preventDefault();
+          setShowCandidateMarkers(prev => !prev);
         }
       }
     };
@@ -633,6 +660,27 @@ export function MitosisViewer({
               </div>
             )}
 
+            {/* Annotation Mask Toggle Button */}
+            <button
+              onClick={() => setShowCandidateMarkers(!showCandidateMarkers)}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all border ${
+                showCandidateMarkers
+                  ? "bg-emerald-950/90 text-emerald-300 border-emerald-600/80 hover:bg-emerald-900/60 shadow-sm"
+                  : "bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200"
+              }`}
+              title="Toggle Mitotic Figure Annotations & Green Dots (Hotkey: A)"
+            >
+              {showCandidateMarkers ? (
+                <Eye className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <EyeOff className="w-3.5 h-3.5 text-slate-500" />
+              )}
+              <span>{showCandidateMarkers ? "Mitosis Dots: ON" : "Mitosis Dots: OFF"}</span>
+              <kbd className="text-[9px] font-mono px-1 py-0.2 bg-slate-900/80 rounded border border-slate-700 text-slate-400">
+                A
+              </kbd>
+            </button>
+
             {/* Stain Switcher */}
             <div className="flex items-center bg-slate-800 p-0.5 rounded border border-slate-700">
               <button
@@ -804,31 +852,31 @@ export function MitosisViewer({
                     <circle
                       cx="260"
                       cy="260"
-                      r="250"
+                      r="258"
                       fill="none"
                       stroke="#10b981"
-                      strokeWidth="2.5"
+                      strokeWidth="2"
                       strokeDasharray="8 4"
                       className="drop-shadow-md"
                     />
                     
                     {/* Crosshairs */}
-                    <line x1="260" y1="10" x2="260" y2="510" stroke="rgba(16, 185, 129, 0.25)" strokeWidth="1" />
-                    <line x1="10" y1="260" x2="510" y2="260" stroke="rgba(16, 185, 129, 0.25)" strokeWidth="1" />
+                    <line x1="260" y1="4" x2="260" y2="516" stroke="rgba(16, 185, 129, 0.25)" strokeWidth="1" />
+                    <line x1="4" y1="260" x2="516" y2="260" stroke="rgba(16, 185, 129, 0.25)" strokeWidth="1" />
 
                     {/* Reticle Central Dot */}
-                    <circle cx="260" cy="260" r="3" fill="#10b981" />
+                    <circle cx="260" cy="260" r="2.5" fill="#10b981" />
 
-                    {/* Candidate Mitosis Pins on 40x Optical Patch */}
-                    {activeFieldCandidates.map((cand) => {
+                    {/* Candidate Mitosis Pins on 40x Optical Patch (Toggleable) */}
+                    {showCandidateMarkers && activeFieldCandidates.map((cand) => {
                       if (!activeHpf) return null;
                       const [cx, cy] = activeHpf.center_um;
                       const dx_um = cand.centroid_um[0] - cx;
                       const dy_um = cand.centroid_um[1] - cy;
                       
-                      // 524 µm field size maps to 520 px canvas
-                      const pxX = 260 + (dx_um / 524.0) * 500;
-                      const pxY = 260 + (dy_um / 524.0) * 500;
+                      // 524 µm field size maps exactly to 520 px canvas (Dead-center alignment)
+                      const pxX = 260 + (dx_um / 524.0) * 520.0;
+                      const pxY = 260 + (dy_um / 524.0) * 520.0;
 
                       const isSelected = cand.id === selectedCandidateId;
                       const color = cand.label === "mitosis" ? "#10b981" : (cand.label === "not_mitosis" ? "#64748b" : "#f59e0b");
@@ -836,30 +884,52 @@ export function MitosisViewer({
                       return (
                         <g
                           key={`cand-patch-${cand.id}`}
-                          className="pointer-events-auto cursor-pointer transition-transform hover:scale-125"
+                          className="pointer-events-auto cursor-pointer"
                           onClick={() => setSelectedCandidateId(cand.id)}
                         >
                           <circle
                             cx={pxX}
                             cy={pxY}
-                            r={isSelected ? 8 : 5}
+                            r={isSelected ? 7.5 : 5}
                             fill={color}
                             stroke={isSelected ? "#38bdf8" : "#0f172a"}
-                            strokeWidth={isSelected ? 3 : 1.5}
-                            className={isSelected ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.9)] animate-pulse" : ""}
+                            strokeWidth={isSelected ? 2.5 : 1.5}
+                            className={isSelected ? "filter drop-shadow-[0_0_6px_rgba(56,189,248,0.9)]" : "hover:stroke-sky-300 hover:stroke-[2] transition-colors"}
                           />
+                          {isSelected && (
+                            <circle
+                              cx={pxX}
+                              cy={pxY}
+                              r={12}
+                              fill="none"
+                              stroke="#38bdf8"
+                              strokeWidth="1.5"
+                              strokeDasharray="3 3"
+                            />
+                          )}
                         </g>
                       );
                     })}
                   </svg>
 
-                  {/* Badge: 40x Magnification Indicator */}
+                  {/* On-Stage Floating Controls */}
                   <div className="absolute top-3 left-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-slate-200 shadow">
                     HPF #{activeHpfSeq} • 40× Objective (400× Optical / 0.25 µm/px)
                   </div>
-                  <div className="absolute top-3 right-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-emerald-400 font-bold shadow">
+                  <div className="absolute top-3 right-3 bg-slate-900/90 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-mono text-emerald-400 font-bold shadow flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
                     {activeHpf?.count || 0} Mitoses
                   </div>
+
+                  {/* Stage Quick Mask Toggle */}
+                  <button
+                    onClick={() => setShowCandidateMarkers(!showCandidateMarkers)}
+                    className="absolute bottom-3 right-3 bg-slate-900/90 hover:bg-slate-800 backdrop-blur px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] font-medium text-slate-300 hover:text-white shadow flex items-center gap-1.5 transition-all"
+                    title="Toggle annotations on/off (Key: A)"
+                  >
+                    {showCandidateMarkers ? <Eye className="w-3.5 h-3.5 text-emerald-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
+                    <span>{showCandidateMarkers ? "Hide Annotations" : "Show Annotations"}</span>
+                  </button>
                 </div>
 
                 {/* Picture-in-Picture Macro Biopsy Minimap (Never lose position sense) */}

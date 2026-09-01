@@ -609,7 +609,7 @@ export function OpenSeadragonViewer({
             return (
               <g
                 key={`marker-${m.id}`}
-                className="cursor-pointer pointer-events-auto transition-transform hover:scale-125"
+                className="cursor-pointer pointer-events-auto"
                 onClick={() => onSelectCandidate && onSelectCandidate(m.id)}
               >
                 <circle
@@ -619,7 +619,7 @@ export function OpenSeadragonViewer({
                   fill={color}
                   stroke={isSelected ? "#38bdf8" : "#0f172a"}
                   strokeWidth={isSelected ? 3 : 1.5}
-                  className={isSelected ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.9)] animate-pulse" : ""}
+                  className={isSelected ? "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.9)]" : "hover:stroke-sky-300 hover:stroke-[2.5] transition-colors"}
                 />
                 {isSelected && (
                   <circle
@@ -630,8 +630,6 @@ export function OpenSeadragonViewer({
                     stroke="#38bdf8"
                     strokeWidth="2"
                     strokeDasharray="3 3"
-                    className="animate-spin"
-                    style={{ animationDuration: "4s" }}
                   />
                 )}
               </g>
