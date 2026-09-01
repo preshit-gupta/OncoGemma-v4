@@ -28,6 +28,11 @@ const GradingReviewWorkspace = dynamic(
   { ssr: false }
 );
 
+const ReportWorkspace = dynamic(
+  () => import("@/components/viewer/ReportWorkspace").then((mod) => mod.ReportWorkspace),
+  { ssr: false }
+);
+
 export default function CaseWorkspacePage({ params }: { params: { id: string } }) {
   const caseId = params.id;
 
@@ -65,9 +70,12 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
     const triageStage = stages.find((s) => s.stage === "triage");
     const mitosisStage = stages.find((s) => s.stage === "mitosis");
     const gradingStage = stages.find((s) => s.stage === "grading");
+    const reportStage = stages.find((s) => s.stage === "report");
 
     if (!hasUserNavigated) {
-      if (gradingStage && (gradingStage.status === "running" || gradingStage.status === "done" || gradingStage.status === "confirmed" || gradingStage.status === "awaiting_review")) {
+      if (reportStage && (reportStage.status === "running" || reportStage.status === "done" || reportStage.status === "confirmed" || reportStage.status === "awaiting_review")) {
+        setActiveStage("report");
+      } else if (gradingStage && (gradingStage.status === "running" || gradingStage.status === "done" || gradingStage.status === "confirmed" || gradingStage.status === "awaiting_review")) {
         setActiveStage("grading");
       } else if (mitosisStage && (mitosisStage.status === "running" || mitosisStage.status === "done" || mitosisStage.status === "confirmed" || mitosisStage.status === "awaiting_review")) {
         setActiveStage("mitosis");
@@ -304,6 +312,11 @@ export default function CaseWorkspacePage({ params }: { params: { id: string } }
                 </button>
               </div>
             </div>
+          ) : activeStage === "report" ? (
+            <ReportWorkspace
+              caseId={caseId}
+              onRefreshCase={loadData}
+            />
           ) : activeStage === "grading" ? (
             <GradingReviewWorkspace
               caseId={caseId}

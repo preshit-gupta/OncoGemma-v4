@@ -4,6 +4,7 @@ from app.routers.audit import router as audit_router
 from app.routers.triage import router as triage_router
 from app.routers.mitosis import router as mitosis_router
 from app.routers.grading import router as grading_router
+from app.routers.report import router as report_router
 
 __all__ = [
     "cases_router",
@@ -11,5 +12,6 @@ __all__ = [
     "audit_router",
     "triage_router",
     "mitosis_router",
-    "grading_router"
+    "grading_router",
+    "report_router"
 ]

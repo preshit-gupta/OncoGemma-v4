@@ -21,3 +21,4 @@ class Case(Base):
     slides = relationship("Slide", back_populates="case", cascade="all, delete-orphan")
     stage_executions = relationship("StageExecution", back_populates="case", cascade="all, delete-orphan")
     grading = relationship("Grading", back_populates="case", uselist=False, cascade="all, delete-orphan")
+    report = relationship("Report", back_populates="case", uselist=False, cascade="all, delete-orphan")

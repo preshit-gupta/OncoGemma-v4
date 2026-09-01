@@ -1,8 +1,8 @@
-# OncoGemma Stage v4.4: Nottingham Histologic Grading & Architectural Synthesis (MedGemma 1.5)
+# OncoGemma Stage v4.5: CAP-Compliant Synoptic Reporting & AJCC Staging (MedGemma 1.5)
 
-OncoGemma is an enterprise-grade clinical AI copilot for automated Whole-Slide Image (WSI) processing, hotspot triage, and Nottingham Histological Grading of invasive breast carcinoma.
+OncoGemma is an enterprise-grade clinical AI copilot for automated Whole-Slide Image (WSI) processing, hotspot triage, Nottingham Histological Grading, and standardized CAP-compliant synoptic surgical pathology reporting for invasive breast carcinoma.
 
-This repository branch (`v4.4-nottingham-grading`) implements **Stage v4.4 (Nottingham Histological Grading via MedGemma 1.5 & Pure Zero-LLM Aggregation)**, combining cell-level mitotic counts from Stage v4.3 with automated architectural analysis across 24 normalized $10\times$ evidence patches to establish Tubule Formation, Nuclear Pleomorphism, CAP Histologic Subtype, and live Nottingham Grade.
+This repository branch (`v4.5-cap-reporting`) implements **Stage v4.5 (CAP-Compliant Reporting via Pure Zero-LLM AJCC Staging, MedGemma 1.5 Narrative Synthesis & ReportLab Clinical PDF Generation)**, synthesizing confirmed histologic grading from Stage v4.4, mitotic counts from Stage v4.3, and hotspot triage from Stage v4.2 alongside surgical, gross, and biomarker data into standard College of American Pathologists (CAP) Cancer Protocol checklists.
 
 ---
 
@@ -10,114 +10,87 @@ This repository branch (`v4.4-nottingham-grading`) implements **Stage v4.4 (Nott
 
 ```mermaid
 flowchart TD
-    A["Confirmed Stage 3 Hotspots + Stage 4 Mitotic Score"] -->|"Stratified Top-50% Draw (Seeded RNG) + Top-3 Hottest"| B["Sample 24 Evidence Patches (512x512 @ 1.0 µm/px)"]
-    B --> C["Macenko Stain Normalizer Transform"]
-    C --> D["Persist Patch PNGs to gcs_cache/{case_id}/grading_patches/"]
+    A["Confirmed Stage 5 Grading + Stage 4 Mitotic HPFs + Stage 3 Hotspots"] --> B["Stage 6 Background Worker (worker/report.py)"]
+    B --> C["Aggregate Verified Stage 1-5 Machine & Override Data"]
+    C --> D["Deterministic Zero-LLM AJCC Staging Engine (pipeline/staging.py)"]
+    C --> E["MedGemma 1.5 Multi-Section Narrative Synthesis (configs/prompts/cap_report@v1.md)"]
+    E --> F["Pure Code Numerical Consistency Guardrail"]
+    D & F --> G["Persist Draft Report to DB (reports Table) -> Status: awaiting_review"]
     
-    D -->|"Async Batch (Concurrency <= 4)"| E1["MedGemma 1.5: Tubule Assessment (24 calls)"]
-    D -->|"Async Batch (Concurrency <= 4)"| E2["MedGemma 1.5: Pleomorphism Assessment (24 calls)"]
-    D -->|"Multi-Image Call (Top-8 Patches)"| E3["MedGemma 1.5: Histologic Subtype (1 call)"]
+    G --> H["Stage 6 Pathologist Synoptic Workspace (frontend/components/viewer/ReportWorkspace.tsx)"]
+    H -->|"Interactive Synoptic Smart-Form"| I["Update Gross / Surgical / Biomarker Elements"]
+    I -->|"Live Debounced API Call"| D
+    H -->|"Live PDF Streaming / Preview"| J["ReportLab Clinical PDF Engine (pipeline/report_pdf.py)"]
+    J -->|"Embed Key Visual Evidence"| K["WSI Heatmap + Top Mitotic HPF + Grading Patch"]
     
-    E1 -->|"Schema Validation + Pydantic Parsing"| F["Parsed Machine Responses"]
-    E2 -->|"Schema Validation + Pydantic Parsing"| F
-    E3 -->|"Schema Validation + Pydantic Parsing"| F
-    
-    F -->|"Pure Zero-LLM Calculation (pipeline/grading.py)"| G["Deterministic Aggregation Engine"]
-    G -->|"Weighted Median (Tubule %) -> Score 1/2/3"| H1["Tubule Score (T)"]
-    G -->|"Weighted Mode (Tie -> Worst Grade)"| H2["Pleomorphism Score (P)"]
-    A -->|"From Stage 4"| H3["Mitotic Score (M)"]
-    
-    H1 & H2 & H3 -->|"T + P + M = Nottingham Sum"| I["Nottingham Grade (Grade 1 / 2 / 3)"]
-    G -->|"Quality Checks (len < 8 or variance > 30%)"| J["Quality Flags (amber UI alerts)"]
-    I & J -->|"Aggregated JSON Input Only"| K["MedGemma 1.5: Grounded Findings Narrative"]
-    
-    I & K & E3 --> L["Stage 5 Pathologist Review Workspace"]
-    L -->|"Override T or P (>=10 char justification)"| M["Live Reactive Recalculation + Manually Assigned Chip"]
-    L -->|"Mandatory Type Confirmation Gate"| N["Explicit Pathologist Sign-Off"]
-    N -->|"Commit to DB (CHECK Constraint Enforced)"| O["Persist to gradings Table + Audit Logs -> Advance to Stage 6"]
+    H -->|"Pathologist Review & Sign-Off Gate"| L["Digital Attestation Modal (Credentials, NPI, Checkbox)"]
+    L -->|"Commit Final Signature"| M["Lock Report -> status: signed (Case: done)"]
+    M --> N["Generate SHA-256 Integrity Hash & Audit Event"]
+    M --> O["Structured CAP eCC / FHIR JSON Export + Printable Clinical PDF"]
+    M -.->|"Formal Re-open / Correction"| P["Versioned Amendment Workflow (v1.0 -> v1.1)"]
 ```
 
 ---
 
-## 📋 Implementation Plan & Mathematical Specification
+## 📋 Mathematical Specification & Staging Invariants
 
-### 1. Tubule Formation Scoring
-- Evaluated across all patches where `tumor_present == True`:
-  $$\text{Tubule } \% = \text{WeightedMedian}\left(\{\text{tubule\_percent}_i\}, w_i\right) \quad \text{where } w_i = \{ \text{low}: 0.5, \text{medium}: 1.0, \text{high}: 1.5 \}$$
-- Nottingham sub-score mapping:
-  $$\text{Tubule Score} = \begin{cases} 1 & \text{if } \text{Tubule } \% > 75.0\% \\ 2 & \text{if } 10.0\% \le \text{Tubule } \% \le 75.0\% \\ 3 & \text{if } \text{Tubule } \% < 10.0\% \end{cases}$$
+### 1. Pure Zero-LLM Pathologic T (pT) Staging
+$$\text{pT} = \begin{cases} 
+\text{pTis} & \text{if in situ only} \\
+\text{pT1mi} & \text{if } 0.0 < \text{size\_mm} \le 1.0 \\
+\text{pT1a} & \text{if } 1.0 < \text{size\_mm} \le 5.0 \\
+\text{pT1b} & \text{if } 5.0 < \text{size\_mm} \le 10.0 \\
+\text{pT1c} & \text{if } 10.0 < \text{size\_mm} \le 20.0 \\
+\text{pT2} & \text{if } 20.0 < \text{size\_mm} \le 50.0 \\
+\text{pT3} & \text{if } \text{size\_mm} > 50.0 \\
+\text{pT4a/b/c} & \text{if chest wall extension and/or skin ulceration}
+\end{cases}$$
 
-### 2. Nuclear Pleomorphism Scoring
-- Evaluated across 24 patches:
-  $$\text{Pleomorphism Score} = \text{WeightedMode}\left(\{\text{pleomorphism\_score}_i\}, w_i\right)$$
-- **Conservative Tie-Breaking Rule**: In the event of a tie in weighted votes, the higher score is assigned (conservative clinical bias favoring the worse grade).
+### 2. Pathologic N (pN) Staging
+$$\text{pN} = \begin{cases}
+\text{pNX} & \text{if nodes not examined (biopsy)} \\
+\text{pN0} & \text{if } \text{positive\_nodes} = 0 \\
+\text{pN1mi} & \text{if micrometastasis only } (0.2\text{ mm} - 2.0\text{ mm}) \\
+\text{pN1a} & \text{if } 1 \le \text{positive\_nodes} \le 3 \\
+\text{pN2a} & \text{if } 4 \le \text{positive\_nodes} \le 9 \\
+\text{pN3a} & \text{if } \text{positive\_nodes} \ge 10
+\end{cases}$$
 
-### 3. Nottingham Histological Grade Synthesis (Zero-LLM Guard)
-- Pure integer sum:
-  $$\text{Nottingham Sum} = \text{Tubule Score} + \text{Pleomorphism Score} + \text{Mitotic Score}$$
-- Final grade determination:
-  $$\text{Nottingham Grade} = \begin{cases} 1\ (\text{Well Differentiated}) & \text{if } 3 \le \text{Nottingham Sum} \le 5 \\ 2\ (\text{Moderately Differentiated}) & \text{if } 6 \le \text{Nottingham Sum} \le 7 \\ 3\ (\text{Poorly Differentiated}) & \text{if } 8 \le \text{Nottingham Sum} \le 9 \end{cases}$$
-
-### 4. Database Invariant & Guard
-Enforced directly via PostgreSQL / SQLite `CHECK` constraint in `backend/app/models/grading.py`:
-```sql
-CREATE TABLE gradings (
-  case_id uuid PRIMARY KEY REFERENCES cases(id),
-  tubule_percent real, tubule_score int, pleo_score int,
-  mitotic_score int, nottingham_sum int, grade int,
-  histologic_type text NOT NULL, type_confirmed_by text NOT NULL,
-  machine jsonb NOT NULL, overrides jsonb NOT NULL DEFAULT '{}',
-  CHECK (grade = CASE WHEN tubule_score+pleo_score+mitotic_score <= 5 THEN 1 
-                      WHEN tubule_score+pleo_score+mitotic_score <= 7 THEN 2 
-                      ELSE 3 END)
-);
-```
-
-### 5. Versioned Prompts with SHA-256 Tracking
-Prompt templates stored in `configs/prompts/*.md`:
-- `tubule@v1.md`: Structured per-patch glandular/tubular percentage estimation.
-- `pleo@v1.md`: Structured nuclear atypia, chromatin texture, and nucleolar prominence grading.
-- `histologic_type@v1.md`: Multi-image consensus classification across top 8 patches.
-- `findings_narrative@v1.md`: Diagnostic summary receiving strictly finalized JSON numbers.
+### 3. Anatomic Stage Grouping
+$$\text{Stage Group} = \text{AJCC\_Matrix}(\text{pT}, \text{pN}, \text{pM})$$
+- Evaluated deterministically with pure zero-LLM matrix lookup (`0`, `IA`, `IB`, `IIA`, `IIB`, `IIIA`, `IIIB`, `IIIC`, `IV`).
 
 ---
 
-## 🔍 Walkthrough & Key Deliverables
+## 🔍 Key Deliverables
 
-### 1. Zero-LLM Aggregation Engine (`backend/pipeline/grading.py`)
-- Complete deterministic computation with zero LLM math hallucinations.
-- Invariant validation protecting against corrupted inputs.
-- Automated quality flags (`insufficient_tumor_patches`, `pleo_high_variance`).
+### 1. Pure Zero-LLM Staging Engine (`backend/pipeline/staging.py`)
+- Full AJCC 8th/9th Edition deterministic staging calculations.
+- Code-level numerical guardrail detecting any conflicting LLM narrative citations.
 
-### 2. MedGemma 1.5 Client (`backend/pipeline/medgemma.py`)
-- Async semaphore concurrency limiter (`concurrency <= 4`).
-- Pydantic schema validation with automatic 2x retry loop on malformed outputs.
-- Graceful fallback to `needs_human: true`.
+### 2. Clinical PDF Generation Engine (`backend/pipeline/report_pdf.py`)
+- Built with ReportLab producing two-column institutional surgical pathology reports.
+- Embedded visual evidence: WSI Triage Heatmap, Highest-Density Mitotic HPF Crop with annotations, and representative $10\times$ Grading Patch.
+- Pathologist digital signature block with SHA-256 integrity checksum.
 
-### 3. Stage 5 Worker Handler (`backend/worker/grading.py`)
-- Deterministic stratified sampling of 24 normalized $10\times$ evidence patches ($512 \times 512$ px @ $1.0\ \mu\text{m/px}$).
-- Macenko stain normalization and local disk/cloud streaming.
+### 3. Stage 6 Background Worker (`backend/worker/report.py`)
+- Aggregates confirmed outputs from Stages 1–5, calculates initial staging, invokes MedGemma 1.5 for narrative synthesis, and compiles draft PDF.
 
-### 4. Stage 5 REST API Router (`backend/app/routers/grading.py`)
-- `GET /api/v1/stages/grading/{case_id}`: Full Stage 5 payload.
-- `GET /api/v1/stages/grading/{case_id}/patches/{patch_id}/image`: Streams normalized 512×512 evidence patch PNG.
-- `POST /api/v1/stages/grading/recompute`: Live debounced preview of sum and grade on override changes (<10ms execution).
-- `POST /api/v1/stages/grading/confirm`: Enforces mandatory type confirmation gate, validates $\ge 10$-character override justification, persists final grading, and queues Stage 6.
+### 4. Stage 6 REST API Router (`backend/app/routers/report.py`)
+- `GET /api/v1/stages/report/{case_id}`: Full Stage 6 synoptic payload.
+- `PUT /api/v1/stages/report/{case_id}`: Live debounced synoptic updates and reactive AJCC re-staging.
+- `POST /api/v1/stages/report/{case_id}/regenerate-narrative`: Re-synthesize narrative with MedGemma 1.5.
+- `GET /api/v1/stages/report/{case_id}/pdf`: Streams generated clinical PDF.
+- `GET /api/v1/stages/report/{case_id}/json`: Downloads structured CAP eCC / FHIR-compatible JSON.
+- `POST /api/v1/stages/report/sign`: Pathologist sign-off gate (credentials, legal attestation, cryptographic SHA-256 hash, case status $\to$ `done`).
+- `POST /api/v1/stages/report/amend`: Versioned amendment workflow (`v1.0` $\to$ `v1.1`).
 
-### 5. Pathologist Review Workspace (`frontend/components/viewer/GradingReviewWorkspace.tsx`)
-- **3 Sub-score Cards**:
-  - Tubule card with derived %, score (1/2/3), mini-histogram, and override selector.
-  - Pleomorphism card with per-patch votes, morphometry rationales, and override selector.
-  - Mitotic count card (read-only summary from Stage 4 + "Reopen Stage 4 Review" link).
-- **CAP Histologic Subtype Card (Mandatory Gate)**:
-  - Proposed subtype pill, differential tags, and AI rationale.
-  - Mandatory "Confirm Histologic Subtype" gate that keeps "Confirm Stage 5" button locked until explicitly acted upon.
-- **Overall Grade Card**:
-  - Live reactive formula display: `T + P + M = Sum -> Grade (I / II / III)`.
-  - Dynamic "Manually Assigned" chips on overridden components.
-  - Grounded diagnostic summary narrative.
-- **24 Evidence Patches Modal**:
-  - High-resolution gallery displaying all 24 normalized patches with per-patch predictions.
+### 5. Pathologist Review Workspace (`frontend/components/viewer/ReportWorkspace.tsx`)
+- **Dynamic CAP Smart-Form**: Supports both **Core Needle Biopsy** and **Excision / Resection (Lumpectomy, Mastectomy)** protocols.
+- **Auto-Locked Stage 1-5 Diagnostic Chips**: Verified Nottingham Grade, Subtype, and Mitotic Rate.
+- **Live Reactive AJCC Staging Card**: Instantaneous recalculation on dimension or node changes.
+- **MedGemma Narrative Editor**: Section-by-section clinical findings narrative with live regeneration button.
+- **Pathologist Sign-Off Modal**: Attestation statement, NPI input, electronic signature, and amendment tracking.
 
 ---
 
@@ -128,16 +101,15 @@ Executed the entire backend test suite:
 ```bash
 pytest backend/tests/ -v
 ```
-**Result: 46/46 Passed (100% Pass Rate)**
-- `test_weighted_median_basic` ✅ PASSED
-- `test_weighted_mode_and_tie_breaking` ✅ PASSED (asserts ties favor worse grade)
-- `test_tubule_boundary_cutoffs` ✅ PASSED (boundary values 75.1, 75.0, 10.0, 9.9)
-- `test_exhaustive_27_grade_combinations` ✅ PASSED (all 27 combinations match exact Nottingham Grade)
-- `test_invariant_validation_failure` ✅ PASSED (asserts ValueError on any invariant violation)
-- `test_aggregate_grading_findings_flow` ✅ PASSED
-- `test_database_check_constraint_enforcement` ✅ PASSED (inconsistent row insertion rejected by DB)
-- `test_grading_api_full_workflow` ✅ PASSED (tested GET, recompute, blocked confirmation on missing type confirmation, blocked confirmation on short justification, and successful confirmation)
-- All 38 existing tests for Stages 1–4 ✅ PASSED
+**Result: 58/58 Passed (100% Pass Rate)**
+- `test_ajcc_pt_staging_cutoffs` ✅ PASSED (boundary values pTis, pT1mi, pT1a, pT1b, pT1c, pT2, pT3, pT4a/b/c)
+- `test_ajcc_pn_staging_cutoffs` ✅ PASSED (pNX, pN0, pN1mi, pN1a, pN2a, pN3a)
+- `test_ajcc_stage_group_matrix` ✅ PASSED (all stage group combinations)
+- `test_staging_invariant_violations` ✅ PASSED (asserts ValueError on node count discrepancy)
+- `test_narrative_consistency_guardrail` ✅ PASSED (asserts error on conflicting grade citation)
+- `test_clinical_pdf_generation` ✅ PASSED (asserts non-empty generated PDF)
+- `test_stage_6_full_workflow` ✅ PASSED (GET, PUT, regenerate, PDF streaming, JSON export, sign-off, amendment)
+- All 51 existing tests for Stages 1–5 ✅ PASSED
 
 ### 2. Next.js Frontend Production Build
 ```bash
@@ -152,7 +124,7 @@ cd frontend && npm run build
 1. **Start Backend Server**:
    ```bash
    cd backend
-   python run_server.py
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 2. **Start Background Worker**:
    ```bash
