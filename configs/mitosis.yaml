@@ -9,7 +9,7 @@ detector:
   stride_px: 960 # 64 px overlap across tiles
   overlap_px: 64
   det_threshold: 0.35 # High-recall candidate sweep threshold (recall ~0.88-0.90 on MIDOG++)
-  review_threshold: 0.50 # Gating threshold for pathologist confirmation
+  review_threshold: 0.40 # Gating threshold for pathologist confirmation (0.40 - 0.65 is unreviewed)
   nms_radius_um: 7.5 # Cross-tile greedy NMS suppression radius (mitotic figure ~10-15 um)
   batch_size: 16
   fp16: true
@@ -20,7 +20,7 @@ verifier:
   weights_path: "models/verifier/hovernet_mitosis.pt"
   crop_size_px: 128
   crop_size_um: 32.0 # 128 * 0.25
-  ver_threshold: 0.50
+  ver_threshold: 0.65 # Confirmed mitosis verification threshold (>=0.65 is definite mitosis)
 
 hpf:
   radius_um: 262.0 # 250-270 um field radius (area ≈ 0.2157 mm²)
