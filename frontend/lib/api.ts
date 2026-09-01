@@ -310,6 +310,37 @@ export interface GradingPatch {
     rationale: string;
     confidence: "low" | "medium" | "high";
   };
+  review_status: "suggested" | "approved" | "modified";
+  user_tubule_percent?: number | null;
+  user_tumor_present?: boolean | null;
+  user_pleo_score?: (1 | 2 | 3) | null;
+  user_notes?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+}
+
+export interface HpfGradingSite {
+  seq: number;
+  center_um: [number, number];
+  radius_um: number;
+  mitotic_count: number;
+  density_mm2: number;
+  review_status: "suggested" | "approved" | "modified";
+  user_mitotic_count?: number | null;
+  user_notes?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+}
+
+export interface ReviewSummary {
+  total_patches: number;
+  approved_patches: number;
+  all_patches_reviewed: boolean;
+  total_hpfs: number;
+  approved_hpfs: number;
+  all_hpfs_reviewed: boolean;
+  is_type_confirmed: boolean;
+  can_confirm: boolean;
 }
 
 export interface GradingSubscores {
@@ -338,6 +369,8 @@ export interface GradingStageData {
   slide_id?: string | null;
   status: string;
   patches: GradingPatch[];
+  hpfs: HpfGradingSite[];
+  review_summary: ReviewSummary;
   machine: GradingSubscores;
   current: GradingSubscores;
   histologic_type: HistologicTypeMeta;
@@ -351,11 +384,73 @@ export interface GradingStageData {
   model_versions: Record<string, any>;
 }
 
+export interface SinglePatchReview {
+  patch_id: string;
+  tubule_percent?: number;
+  tumor_present?: boolean;
+  pleomorphism_score?: 1 | 2 | 3;
+  status: "suggested" | "approved" | "modified";
+  notes?: string;
+}
+
+export interface PatchReviewPayload {
+  case_id: string;
+  reviewed_by?: string;
+  action: "update" | "approve_all" | "reset_all";
+  reviews?: SinglePatchReview[];
+}
+
+export interface SingleHpfReview {
+  seq: number;
+  mitotic_count?: number;
+  status: "suggested" | "approved" | "modified";
+  notes?: string;
+}
+
+export interface HpfReviewPayload {
+  case_id: string;
+  reviewed_by?: string;
+  action: "update" | "approve_all" | "reset_all";
+  reviews?: SingleHpfReview[];
+}
+
 export async function fetchGradingStageData(caseId: string): Promise<GradingStageData> {
   const res = await fetch(`${API_BASE}/api/v1/stages/grading/${caseId}`, {
     headers: { "X-User-Role": "pathologist" }
   });
   if (!res.ok) throw new Error(`Failed to fetch grading stage data (Status: ${res.status})`);
+  return res.json();
+}
+
+export async function reviewGradingPatches(payload: PatchReviewPayload): Promise<GradingStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/grading/patches/review`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to update patch reviews");
+  }
+  return res.json();
+}
+
+export async function reviewGradingHpfs(payload: HpfReviewPayload): Promise<GradingStageData> {
+  const res = await fetch(`${API_BASE}/api/v1/stages/grading/hpfs/review`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Role": "pathologist"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "Failed to update HPF reviews");
+  }
   return res.json();
 }
 
@@ -412,4 +507,5 @@ export async function confirmGradingStage(payload: {
   }
   return res.json();
 }
+
 

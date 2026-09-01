@@ -189,6 +189,40 @@ def validate_grading_invariants(
         raise ValueError(f"Invariant Violation: grade ({grade}) does not match expected Nottingham Grade ({expected_grade}) for sum {expected_sum}")
 
 
+def calculate_mitotic_score_from_hpfs(
+    hpf_mitotic_counts: List[int],
+    cfg: Optional[Dict[str, Any]] = None
+) -> Tuple[int, int]:
+    """
+    Calculate total mitoses and Nottingham Mitotic Score (1, 2, or 3) across 10 standard HPFs.
+    
+    Standard Cutoffs for 10 HPFs (0.2157 mm² per HPF, 2.157 mm² total):
+    - Score 1: < 8 mitoses (< 3.7 / mm²)
+    - Score 2: 8 - 15 mitoses (3.7 - 7.2 / mm²)
+    - Score 3: >= 16 mitoses (> 7.2 / mm²)
+    
+    Returns:
+        (total_mitoses, mitotic_score)
+    """
+    total_mitoses = sum(hpf_mitotic_counts) if hpf_mitotic_counts else 0
+    
+    cutoff1 = 8
+    cutoff2 = 16
+    if cfg and "mitosis" in cfg:
+        mit_cfg = cfg["mitosis"].get("cutoffs", {})
+        cutoff1 = mit_cfg.get("score2_min", 8)
+        cutoff2 = mit_cfg.get("score3_min", 16)
+        
+    if total_mitoses < cutoff1:
+        score = 1
+    elif total_mitoses < cutoff2:
+        score = 2
+    else:
+        score = 3
+        
+    return total_mitoses, score
+
+
 def aggregate_grading_findings(
     tubule_responses: List[Dict[str, Any]],
     pleo_responses: List[Dict[str, Any]],
@@ -199,9 +233,9 @@ def aggregate_grading_findings(
     Full end-to-end pure code aggregation pipeline.
     
     Args:
-        tubule_responses: List of per-patch dicts with {tubule_percent, tumor_present, confidence}
-        pleo_responses: List of per-patch dicts with {pleomorphism_score, rationale, confidence}
-        mitotic_score: Confirmed Stage 4 mitotic score (1, 2, or 3)
+        tubule_responses: List of per-patch dicts with {tubule_percent, tumor_present, confidence, [user_tubule_percent], [user_tumor_present]}
+        pleo_responses: List of per-patch dicts with {pleomorphism_score, rationale, confidence, [user_pleo_score]}
+        mitotic_score: Confirmed mitotic score (1, 2, or 3)
         cfg: Scoring config dict
         
     Returns:
@@ -216,21 +250,38 @@ def aggregate_grading_findings(
     min_tumor_patches = cfg.get("grading", {}).get("min_tumor_patches", DEFAULT_MIN_TUMOR_PATCHES)
     max_disp = cfg.get("grading", {}).get("max_disp", DEFAULT_MAX_DISP)
     
-    # 1. Filter tumor-containing patches for Tubule assessment
-    tumor_tubule = [r for r in tubule_responses if r.get("tumor_present", True)]
+    # 1. Filter tumor-containing patches for Tubule assessment (accounting for pathologist overrides)
+    tumor_tubule = []
+    for r in tubule_responses:
+        tumor_present = r.get("user_tumor_present") if r.get("user_tumor_present") is not None else r.get("tumor_present", True)
+        if tumor_present:
+            tumor_tubule.append(r)
     
     if tumor_tubule:
-        tubule_vals = [float(r.get("tubule_percent", 0.0)) for r in tumor_tubule]
-        tubule_w = [weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0) for r in tumor_tubule]
+        tubule_vals = [
+            float(r.get("user_tubule_percent") if r.get("user_tubule_percent") is not None else r.get("tubule_percent", 0.0))
+            for r in tumor_tubule
+        ]
+        # Pathologist-reviewed/modified patches receive highest confidence weight
+        tubule_w = [
+            1.5 if r.get("user_tubule_percent") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
+            for r in tumor_tubule
+        ]
         derived_tubule_percent = round(weighted_median(tubule_vals, tubule_w), 1)
     else:
         derived_tubule_percent = 0.0
         
     tubule_score = calculate_tubule_score(derived_tubule_percent, cfg)
     
-    # 2. Pleomorphism mode calculation across all valid responses
-    pleo_vals = [int(r.get("pleomorphism_score", 2)) for r in pleo_responses]
-    pleo_w = [weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0) for r in pleo_responses]
+    # 2. Pleomorphism mode calculation across all valid responses (accounting for pathologist overrides)
+    pleo_vals = [
+        int(r.get("user_pleo_score") if r.get("user_pleo_score") is not None else r.get("pleomorphism_score", 2))
+        for r in pleo_responses
+    ]
+    pleo_w = [
+        1.5 if r.get("user_pleo_score") is not None else weights_map.get(str(r.get("confidence", "medium")).lower(), 1.0)
+        for r in pleo_responses
+    ]
     
     pleo_score, pleo_dispersion = weighted_mode(pleo_vals, pleo_w, tie_breaker=max)
     
@@ -259,3 +310,4 @@ def aggregate_grading_findings(
         "total_patch_count": max(len(tubule_responses), len(pleo_responses)),
         "pleo_dispersion": round(pleo_dispersion, 3)
     }
+

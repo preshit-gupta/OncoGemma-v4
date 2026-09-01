@@ -52,25 +52,30 @@ def find_slide_file(case_id: str, slide_id: str, local_path: Optional[str] = Non
         return local_path
 
     cache_base = get_local_cache_dir()
-    candidates = [
-        os.path.join(cache_base, settings.GCS_RAW_BUCKET, "cases", str(case_id), f"{slide_id}.svs"),
-        os.path.join(cache_base, settings.GCS_RAW_BUCKET, f"{slide_id}.svs"),
-        os.path.join("raw_uploads", f"{case_id}_{slide_id}.svs"),
-        os.path.abspath(os.path.join("..", "raw_uploads", f"{case_id}_{slide_id}.svs")),
-        f"D:/Projects/OncoGemma-v4.3 (Aug'26)/raw_uploads/{case_id}_{slide_id}.svs"
+    
+    raw_dirs = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../raw_uploads")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../raw_uploads")),
+        os.path.abspath("raw_uploads"),
+        os.path.abspath("../raw_uploads"),
+        "D:/Projects/OncoGemma-v4.4 (Aug'26)/raw_uploads",
+        "D:/Projects/OncoGemma-v4.3 (Aug'26)/raw_uploads"
     ]
+    
+    for r_dir in raw_dirs:
+        if os.path.exists(r_dir):
+            for f in os.listdir(r_dir):
+                if f.endswith((".svs", ".tif", ".tiff", ".ndpi")) and (str(case_id) in f or str(slide_id) in f):
+                    return os.path.join(r_dir, f)
 
-    for p in candidates:
-        if os.path.exists(p):
-            return p
+    case_raw_dir = os.path.join(cache_base, settings.GCS_RAW_BUCKET, "cases", str(case_id))
+    if os.path.exists(case_raw_dir):
+        for f in os.listdir(case_raw_dir):
+            if f.endswith((".svs", ".tif", ".tiff", ".ndpi")):
+                return os.path.join(case_raw_dir, f)
 
-    # Recursive search in cache base
-    if os.path.exists(cache_base):
-        for root, _, files in os.walk(cache_base):
-            for f in files:
-                if f.endswith(f"{slide_id}.svs") or f.endswith(f"{case_id}_{slide_id}.svs"):
-                    return os.path.join(root, f)
     return None
+
 
 
 def extract_10x_patch(
@@ -327,7 +332,21 @@ def run_grading(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
                 "pleomorphism_score": p_res.pleomorphism_score,
                 "rationale": p_res.rationale,
                 "confidence": p_res.confidence
-            }
+            },
+            "review_status": "suggested"
+        })
+
+    # Format HPF sites for Stage 5 dual-level review
+    hpfs_output = []
+    for h in sorted(hpf_sites, key=lambda x: getattr(x, "seq", 0)):
+        cnt = getattr(h, "mitotic_count", getattr(h, "mitotic_figure_count", 0))
+        hpfs_output.append({
+            "seq": h.seq,
+            "center_um": h.center_um if isinstance(h.center_um, list) else [0, 0],
+            "radius_um": getattr(h, "radius_um", 262.0),
+            "mitotic_count": cnt,
+            "density_mm2": round(cnt / 0.2157, 1),
+            "review_status": "suggested"
         })
 
     # 6. Deterministic Pure Zero-LLM Aggregation
@@ -358,6 +377,7 @@ def run_grading(stage_exec: StageExecution, db: Session) -> Tuple[str, Dict[str,
         "case_id": case_id,
         "slide_id": slide_id,
         "patches": patches_output,
+        "hpfs": hpfs_output,
         "aggregate": aggregate_res,
         "histologic_type": type_response.model_dump(),
         "narrative": narrative_text,

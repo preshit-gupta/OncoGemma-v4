@@ -115,6 +115,9 @@ def test_grading_api_full_workflow():
     assert data["machine"]["grade"] == 2
     assert data["histologic_type"]["proposed_type"] == "IDC-NST"
     assert data["histologic_type"]["is_confirmed"] is False
+    assert data["review_summary"]["all_patches_reviewed"] is False
+    assert data["review_summary"]["all_hpfs_reviewed"] is False
+    assert data["review_summary"]["can_confirm"] is False
 
     # 2. POST /api/v1/stages/grading/recompute (override Pleo to 3)
     recompute_payload = {
@@ -130,7 +133,42 @@ def test_grading_api_full_workflow():
     assert rec_data["grade"] == 3          # Grade 3
     assert rec_data["is_overridden"] is True
 
-    # 3. POST /api/v1/stages/grading/confirm - Blocked if type_confirmed is False
+    # 3. Patch Review: Update single patch and then Approve All
+    patch_update_payload = {
+        "case_id": str(case_id),
+        "reviewed_by": "Dr. Smith",
+        "action": "update",
+        "reviews": [
+            {
+                "patch_id": "p_001",
+                "tubule_percent": 30.0,
+                "tumor_present": True,
+                "pleomorphism_score": 3,
+                "status": "modified",
+                "notes": "Higher atypia in this field"
+            }
+        ]
+    }
+    res_patch = client.post("/api/v1/stages/grading/patches/review", json=patch_update_payload)
+    assert res_patch.status_code == 200
+    patch_data = res_patch.json()
+    assert patch_data["patches"][0]["review_status"] == "modified"
+    assert patch_data["patches"][0]["user_tubule_percent"] == 30.0
+    assert patch_data["patches"][0]["user_pleo_score"] == 3
+    assert patch_data["review_summary"]["all_patches_reviewed"] is True
+
+    # 4. HPF Review: Approve All HPFs
+    hpf_approve_payload = {
+        "case_id": str(case_id),
+        "reviewed_by": "Dr. Smith",
+        "action": "approve_all"
+    }
+    res_hpf = client.post("/api/v1/stages/grading/hpfs/review", json=hpf_approve_payload)
+    assert res_hpf.status_code == 200
+    hpf_data = res_hpf.json()
+    assert hpf_data["review_summary"]["all_hpfs_reviewed"] is True
+
+    # 5. POST /api/v1/stages/grading/confirm - Blocked if type_confirmed is False
     blocked_payload = {
         "case_id": str(case_id),
         "reviewed_by": "Dr. Smith",
@@ -147,7 +185,7 @@ def test_grading_api_full_workflow():
     assert res_block.status_code == 400
     assert "Histologic Type must be explicitly confirmed" in res_block.json()["detail"]
 
-    # 4. POST /api/v1/stages/grading/confirm - Blocked if override justification < 10 chars
+    # 6. POST /api/v1/stages/grading/confirm - Blocked if override justification < 10 chars
     short_just_payload = {
         "case_id": str(case_id),
         "reviewed_by": "Dr. Smith",
@@ -170,7 +208,7 @@ def test_grading_api_full_workflow():
     assert res_short.status_code == 400
     assert "minimum 10-character justification" in res_short.json()["detail"]
 
-    # 5. POST /api/v1/stages/grading/confirm - Success with valid sign-off and justification
+    # 7. POST /api/v1/stages/grading/confirm - Success with valid sign-off and justification
     valid_confirm_payload = {
         "case_id": str(case_id),
         "reviewed_by": "Dr. Smith",
@@ -204,3 +242,4 @@ def test_grading_api_full_workflow():
     assert updated_grading.pleo_score == 3
     assert updated_grading.type_confirmed_by == "Dr. Smith"
     db2.close()
+
